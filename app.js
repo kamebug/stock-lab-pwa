@@ -677,6 +677,47 @@ document.getElementById("btnNewTicker").addEventListener("click", () => {
   openModal(wrap);
 });
 
+document.getElementById("btnDeleteTicker").addEventListener("click", () => {
+  const ticker = STATE.activeTicker;
+  if (!ticker) {
+    showToast("Nenhum ticker selecionado.", true);
+    return;
+  }
+  const ts = getTickerState(ticker);
+  const wrap = el("div", {}, [
+    el("h3", {}, `Excluir ${ticker}`),
+    el("p", { class: "help-text" },
+      `Isso apaga permanentemente o ticker ${ticker}, incluindo suas ${ts.transactions.length} operação(ões) e todo o histórico. Não pode ser desfeito.`),
+    el("div", { class: "field" }, [
+      el("label", {}, `Digite "${ticker}" para confirmar`),
+      el("input", { id: "deleteConfirmInput", placeholder: ticker }),
+    ]),
+    el("div", { style: "margin-top:16px;display:flex;gap:8px;" }, [
+      el("button", { class: "secondary", onclick: closeModal }, "CANCELAR"),
+      el("button", {
+        class: "danger",
+        onclick: () => {
+          const typed = document.getElementById("deleteConfirmInput").value.trim().toUpperCase();
+          if (typed !== ticker) {
+            showToast("O código digitado não confere.", true);
+            return;
+          }
+          delete STATE.portfolio.tickers[ticker];
+          savePortfolio();
+          const remaining = Object.keys(STATE.portfolio.tickers);
+          STATE.activeTicker = remaining.length > 0 ? remaining[0] : null;
+          localStorage.setItem(ACTIVE_TICKER_KEY, STATE.activeTicker || "");
+          closeModal();
+          renderTickerSelect();
+          renderMain();
+          showToast(`Ticker ${ticker} excluído.`);
+        },
+      }, "EXCLUIR PERMANENTEMENTE"),
+    ]),
+  ]);
+  openModal(wrap);
+});
+
 /* ---------------- Configurações fiscais ---------------- */
 
 document.getElementById("btnSettings").addEventListener("click", () => {
