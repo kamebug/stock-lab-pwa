@@ -9,6 +9,14 @@ custo médio móvel japonês, caixa, fiscal, break-even fiscal e econômico,
 simulador de ciclos, relatório fiscal com compensação de prejuízo,
 multi-ticker, import CSV, export CSV/Excel/PDF.
 
+**Suporte a moeda por ticker (JPY/USD):** cada ticker é cadastrado como
+ação japonesa (¥) ou americana ($). Para tickers em USD, cada compra/venda
+registra a cotação USD/JPY usada naquele momento (editável por operação,
+com um valor padrão configurável em ⚙️ Configurações). O resultado fiscal
+e o imposto estimado são **sempre calculados em ¥**, como exige a lei
+japonesa — independente da moeda do ativo. O dashboard mostra o custo
+médio tanto na moeda nativa quanto seu equivalente em ¥.
+
 ## Instalar no celular
 
 1. Publicar via GitHub Pages (`kamebug.github.io/stock-lab/` ou nome

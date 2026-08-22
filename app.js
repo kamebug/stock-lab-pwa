@@ -7,6 +7,11 @@
 const STORAGE_KEY = "stocklab_portfolio_v1";
 const TAXCFG_KEY = "stocklab_taxconfig_v1";
 const ACTIVE_TICKER_KEY = "stocklab_active_ticker_v1";
+const FXCFG_KEY = "stocklab_fxconfig_v1";
+
+// Cotação de referência do dia em que este build foi gerado (23/08/2026).
+// Editável pelo usuário nas configurações; serve só como valor inicial.
+const DEFAULT_USD_JPY_RATE = 158.95;
 
 /* ---------------- Utilidades ---------------- */
 
@@ -14,13 +19,18 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function fmtYen(v, decimals = 2) {
+function fmtMoney(v, currency = "JPY", decimals = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  const symbol = currency === "USD" ? "$" : "¥";
   const sign = v < 0 ? "-" : "";
-  return `${sign}¥${Math.abs(v).toLocaleString("pt-BR", {
+  return `${sign}${symbol}${Math.abs(v).toLocaleString("pt-BR", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   })}`;
+}
+
+function fmtYen(v, decimals = 2) {
+  return fmtMoney(v, "JPY", decimals);
 }
 
 function fmtPct(v) {
@@ -88,28 +98,46 @@ function saveTaxConfig() {
   localStorage.setItem(TAXCFG_KEY, JSON.stringify(STATE.taxConfig));
 }
 
+function loadFxConfig() {
+  try {
+    const raw = localStorage.getItem(FXCFG_KEY);
+    if (!raw) return { usdJpy: DEFAULT_USD_JPY_RATE };
+    const parsed = JSON.parse(raw);
+    return { usdJpy: parsed.usdJpy || DEFAULT_USD_JPY_RATE };
+  } catch (e) {
+    return { usdJpy: DEFAULT_USD_JPY_RATE };
+  }
+}
+
+function saveFxConfig() {
+  localStorage.setItem(FXCFG_KEY, JSON.stringify(STATE.fxConfig));
+}
+
 const STATE = {
   portfolio: loadPortfolio(),
   taxConfig: loadTaxConfig(),
+  fxConfig: loadFxConfig(),
   activeTicker: localStorage.getItem(ACTIVE_TICKER_KEY) || null,
   activeTab: "trade",
   marketPriceRef: 0,
 };
 
-function newTickerState(ticker) {
+function newTickerState(ticker, currency = "JPY") {
   return {
     ticker,
+    currency,          // 'JPY' ou 'USD'
     quantity: 0,
-    avgCost: 0,
-    cashBalance: 0,
-    initialCapital: 0,
+    avgCost: 0,         // custo médio na moeda nativa do ticker
+    avgCostJPY: 0,       // custo médio em JPY (igual a avgCost se currency === 'JPY')
+    cashBalance: 0,      // caixa na moeda nativa do ticker
+    initialCapital: 0,   // capital inicial na moeda nativa do ticker
     transactions: [],
   };
 }
 
-function getTickerState(ticker) {
+function getTickerState(ticker, currency = "JPY") {
   if (!STATE.portfolio.tickers[ticker]) {
-    STATE.portfolio.tickers[ticker] = newTickerState(ticker);
+    STATE.portfolio.tickers[ticker] = newTickerState(ticker, currency);
   }
   return STATE.portfolio.tickers[ticker];
 }
@@ -119,7 +147,7 @@ function getTickerState(ticker) {
    ponderada; venda debita a quantidade ao custo médio vigente
    sem alterar o custo médio por ação. */
 
-function applyBuy(ts, quantity, unitPrice) {
+function applyBuy(ts, quantity, unitPrice, fxRate = 1) {
   const qtyBefore = ts.quantity;
   const avgBefore = ts.avgCost;
   const existingTotal = qtyBefore * avgBefore;
@@ -130,10 +158,22 @@ function applyBuy(ts, quantity, unitPrice) {
   ts.quantity = qtyAfter;
   ts.avgCost = avgAfter;
 
-  return { qtyBefore, qtyAfter, avgBefore, avgAfter, grossCost: purchaseTotal };
+  // Faixa paralela em JPY (mesmo algoritmo de custo médio, preços convertidos).
+  // Para tickers em JPY, fxRate=1 e avgCostJPY === avgCost sempre.
+  const unitPriceJPY = unitPrice * fxRate;
+  const avgBeforeJPY = ts.avgCostJPY;
+  const existingTotalJPY = qtyBefore * avgBeforeJPY;
+  const purchaseTotalJPY = quantity * unitPriceJPY;
+  const avgAfterJPY = qtyAfter > 0 ? (existingTotalJPY + purchaseTotalJPY) / qtyAfter : 0;
+  ts.avgCostJPY = avgAfterJPY;
+
+  return {
+    qtyBefore, qtyAfter, avgBefore, avgAfter, grossCost: purchaseTotal,
+    avgBeforeJPY, avgAfterJPY, unitPriceJPY,
+  };
 }
 
-function applySell(ts, quantity, unitPrice) {
+function applySell(ts, quantity, unitPrice, fxRate = 1) {
   if (quantity > ts.quantity) {
     throw new Error(`Venda de ${quantity} ações excede a posição atual de ${ts.quantity}`);
   }
@@ -147,7 +187,19 @@ function applySell(ts, quantity, unitPrice) {
   ts.quantity = qtyAfter;
   // custo médio por ação não muda numa venda
 
-  return { qtyBefore, qtyAfter, avgBefore, avgAfter: avgBefore, grossProceeds, taxCostBasis, taxResult };
+  // Resultado fiscal em JPY (o que a lei japonesa exige, independente da
+  // moeda do ativo). Para tickers em JPY, isso é idêntico ao taxResult nativo.
+  const avgBeforeJPY = ts.avgCostJPY;
+  const unitPriceJPY = unitPrice * fxRate;
+  const grossProceedsJPY = quantity * unitPriceJPY;
+  const taxCostBasisJPY = quantity * avgBeforeJPY;
+  const taxResultJPY = grossProceedsJPY - taxCostBasisJPY;
+  // avgCostJPY não muda numa venda, igual ao nativo
+
+  return {
+    qtyBefore, qtyAfter, avgBefore, avgAfter: avgBefore, grossProceeds, taxCostBasis, taxResult,
+    avgBeforeJPY, avgAfterJPY: avgBeforeJPY, taxCostBasisJPY, taxResultJPY, unitPriceJPY,
+  };
 }
 
 /* ---------------- Ledger: orquestra buy/sell + registro ---------------- */
@@ -156,10 +208,11 @@ function nextTxnId(ts) {
   return ts.transactions.length + 1;
 }
 
-function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null) {
+function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
   const ts = getTickerState(ticker);
+  const effFxRate = ts.currency === "USD" ? (fxRate || STATE.fxConfig.usdJpy) : 1;
   const isFirstBuy = ts.quantity === 0 && ts.transactions.length === 0;
-  const r = applyBuy(ts, quantity, unitPrice);
+  const r = applyBuy(ts, quantity, unitPrice, effFxRate);
   const cashFlow = -(r.grossCost + fees);
   ts.cashBalance += cashFlow;
   if (isFirstBuy) ts.initialCapital = r.grossCost;
@@ -172,14 +225,18 @@ function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null) {
     quantity,
     unitPrice,
     fees,
+    fxRate: effFxRate,
     grossValue: r.grossCost,
     netValue: r.grossCost + fees,
     quantityBefore: r.qtyBefore,
     quantityAfter: r.qtyAfter,
     avgCostBefore: r.avgBefore,
     avgCostAfter: r.avgAfter,
+    avgCostJPYBefore: r.avgBeforeJPY,
+    avgCostJPYAfter: r.avgAfterJPY,
     taxCostBasis: null,
     taxResult: null,
+    taxResultJPY: null,
     cashFlow,
     cashBalanceAfter: ts.cashBalance,
   };
@@ -188,9 +245,10 @@ function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null) {
   return txn;
 }
 
-function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null) {
+function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
   const ts = getTickerState(ticker);
-  const r = applySell(ts, quantity, unitPrice);
+  const effFxRate = ts.currency === "USD" ? (fxRate || STATE.fxConfig.usdJpy) : 1;
+  const r = applySell(ts, quantity, unitPrice, effFxRate);
   const cashFlow = r.grossProceeds - fees;
   ts.cashBalance += cashFlow;
 
@@ -202,14 +260,18 @@ function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null) {
     quantity,
     unitPrice,
     fees,
+    fxRate: effFxRate,
     grossValue: r.grossProceeds,
     netValue: r.grossProceeds - fees,
     quantityBefore: r.qtyBefore,
     quantityAfter: r.qtyAfter,
     avgCostBefore: r.avgBefore,
     avgCostAfter: r.avgAfter,
+    avgCostJPYBefore: r.avgBeforeJPY,
+    avgCostJPYAfter: r.avgAfterJPY,
     taxCostBasis: r.taxCostBasis,
     taxResult: r.taxResult,
+    taxResultJPY: r.taxResultJPY,
     cashFlow,
     cashBalanceAfter: ts.cashBalance,
   };
@@ -223,10 +285,12 @@ function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null) {
 function snapshotOf(ticker) {
   const ts = getTickerState(ticker);
   return {
+    currency: ts.currency,
     initialCapital: ts.initialCapital,
     cashBalance: ts.cashBalance,
     quantity: ts.quantity,
     taxAvgCost: ts.avgCost,
+    taxAvgCostJPY: ts.avgCostJPY,
   };
 }
 
@@ -267,9 +331,9 @@ function buildTaxReport(transactions, taxConfig) {
   let gains = 0;
   let losses = 0;
   for (const t of transactions) {
-    if (t.side !== "SELL" || t.taxResult === null || t.taxResult === undefined) continue;
-    if (t.taxResult >= 0) gains += t.taxResult;
-    else losses += -t.taxResult;
+    if (t.side !== "SELL" || t.taxResultJPY === null || t.taxResultJPY === undefined) continue;
+    if (t.taxResultJPY >= 0) gains += t.taxResultJPY;
+    else losses += -t.taxResultJPY;
   }
   const net = gains - losses;
   const netTaxableResult = net > 0 ? net : 0;
@@ -305,7 +369,7 @@ function runCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles) {
 /* ---------------- CSV Import (formato: date,ticker,side,quantity,price,fee,currency) ---------------- */
 
 function parseCSV(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0 && !l.trim().startsWith("#"));
   if (lines.length === 0) return { header: [], rows: [] };
   const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
   const rows = lines.slice(1).map((line) => {
@@ -333,13 +397,18 @@ function importCSVText(text) {
     const price = parseFloat(row.price);
     const fee = row.fee ? parseFloat(row.fee) : 0;
     const date = row.date || todayISO();
+    const currency = (row.currency || "JPY").toUpperCase() === "USD" ? "USD" : "JPY";
+    const fxRate = row.fxrate ? parseFloat(row.fxrate) : null;
 
     if (!ticker || !quantity || Number.isNaN(price)) continue;
 
+    // Garante que o ticker já exista com a moeda correta antes da 1ª operação
+    getTickerState(ticker, currency);
+
     if (side === "BUY") {
-      buyOnTicker(ticker, quantity, price, fee, date);
+      buyOnTicker(ticker, quantity, price, fee, date, fxRate);
     } else if (side === "SELL") {
-      sellOnTicker(ticker, quantity, price, fee, date);
+      sellOnTicker(ticker, quantity, price, fee, date, fxRate);
     } else {
       throw new Error(`Lado de operação desconhecido: "${row.side}"`);
     }
@@ -353,12 +422,12 @@ function importCSVText(text) {
 function exportCSV(ticker) {
   const ts = getTickerState(ticker);
   const cols = [
-    "id", "date", "ticker", "side", "quantity", "unitPrice", "fees",
+    "id", "date", "ticker", "side", "quantity", "unitPrice", "fees", "fxRate",
     "grossValue", "netValue", "quantityBefore", "quantityAfter",
-    "avgCostBefore", "avgCostAfter", "taxCostBasis", "taxResult",
+    "avgCostBefore", "avgCostAfter", "taxCostBasis", "taxResult", "taxResultJPY",
     "cashFlow", "cashBalanceAfter",
   ];
-  const lines = [cols.join(",")];
+  const lines = [`# currency=${ts.currency}`, cols.join(",")];
   for (const t of ts.transactions) {
     lines.push(cols.map((c) => (t[c] === null || t[c] === undefined ? "" : t[c])).join(","));
   }
@@ -373,31 +442,40 @@ function exportExcel(ticker) {
   const snap = snapshotOf(ticker);
   const report = buildTaxReport(ts.transactions, STATE.taxConfig);
   const be = breakEvenEconomic(snap);
+  const isUSD = ts.currency === "USD";
 
   const summaryRows = [
     ["Indicador", "Valor"],
     ["Ticker", ticker],
+    ["Moeda", ts.currency],
     ["Capital inicial", snap.initialCapital],
     ["Caixa acumulado", snap.cashBalance],
     ["Ações restantes", snap.quantity],
-    ["Custo médio fiscal", snap.taxAvgCost],
+    ["Custo médio fiscal (moeda nativa)", snap.taxAvgCost],
+  ];
+  if (isUSD) summaryRows.push(["Custo médio fiscal (¥)", snap.taxAvgCostJPY]);
+  summaryRows.push(
     ["Break-even fiscal", breakEvenFiscal(snap)],
     ["Break-even econômico", be === null ? "" : be],
-    ["Ganhos fiscais realizados", report.realizedGains],
-    ["Perdas fiscais realizadas", report.realizedLosses],
-    ["Resultado fiscal líquido", report.totalRealizedResult],
-    ["Prejuízo a compensar", report.carriedLoss],
-    ["Imposto estimado", report.estimatedTax],
-  ];
+    ["Ganhos fiscais realizados (¥)", report.realizedGains],
+    ["Perdas fiscais realizadas (¥)", report.realizedLosses],
+    ["Resultado fiscal líquido (¥)", report.totalRealizedResult],
+    ["Prejuízo a compensar (¥)", report.carriedLoss],
+    ["Imposto estimado (¥)", report.estimatedTax],
+  );
 
-  const txnRows = [
-    ["ID", "Data", "Lado", "Qtd", "Preço", "Qtd antes", "Qtd depois",
-     "Custo médio antes", "Custo médio depois", "Resultado fiscal", "Fluxo de caixa", "Caixa acumulado"],
-    ...ts.transactions.map((t) => [
-      t.id, t.date, t.side, t.quantity, t.unitPrice, t.quantityBefore, t.quantityAfter,
-      t.avgCostBefore, t.avgCostAfter, t.taxResult, t.cashFlow, t.cashBalanceAfter,
-    ]),
-  ];
+  const txnHeader = ["ID", "Data", "Lado", "Qtd", "Preço", "Qtd antes", "Qtd depois",
+     "Custo médio antes", "Custo médio depois"];
+  if (isUSD) txnHeader.push("Câmbio USD/JPY");
+  txnHeader.push("Resultado fiscal (¥)", "Fluxo de caixa", "Caixa acumulado");
+
+  const txnRows = [txnHeader, ...ts.transactions.map((t) => {
+    const row = [t.id, t.date, t.side, t.quantity, t.unitPrice, t.quantityBefore, t.quantityAfter,
+      t.avgCostBefore, t.avgCostAfter];
+    if (isUSD) row.push(t.fxRate);
+    row.push(t.taxResultJPY, t.cashFlow, t.cashBalanceAfter);
+    return row;
+  })];
 
   const wb = XLSX.utils.book_new();
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
@@ -414,26 +492,30 @@ function exportPDF(ticker) {
   const snap = snapshotOf(ticker);
   const report = buildTaxReport(ts.transactions, STATE.taxConfig);
   const be = breakEvenEconomic(snap);
+  const cur = ts.currency;
+  const isUSD = cur === "USD";
 
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
 
   doc.setFontSize(16);
-  doc.text(`Stock Lab — ${ticker}`, 14, 18);
+  doc.text(`Stock Lab — ${ticker} (${cur})`, 14, 18);
 
   doc.setFontSize(11);
   const summaryBody = [
-    ["Capital inicial", fmtYen(snap.initialCapital)],
-    ["Caixa acumulado", fmtYen(snap.cashBalance)],
+    ["Capital inicial", fmtMoney(snap.initialCapital, cur)],
+    ["Caixa acumulado", fmtMoney(snap.cashBalance, cur)],
     ["Ações restantes", String(snap.quantity)],
-    ["Custo médio fiscal", fmtYen(snap.taxAvgCost, 4)],
-    ["Break-even fiscal", fmtYen(breakEvenFiscal(snap), 4)],
-    ["Break-even econômico", be === null ? "—" : fmtYen(be, 4)],
-    ["Ganhos fiscais realizados", fmtYen(report.realizedGains)],
-    ["Perdas fiscais realizadas", fmtYen(report.realizedLosses)],
-    ["Resultado fiscal líquido", fmtYen(report.totalRealizedResult)],
-    ["Prejuízo a compensar", fmtYen(report.carriedLoss)],
-    ["Imposto estimado", fmtYen(report.estimatedTax)],
+    ["Custo médio fiscal", isUSD
+      ? `${fmtMoney(snap.taxAvgCost, "USD", 4)} (${fmtMoney(snap.taxAvgCostJPY, "JPY", 2)})`
+      : fmtMoney(snap.taxAvgCost, "JPY", 4)],
+    ["Break-even fiscal", fmtMoney(breakEvenFiscal(snap), cur, 4)],
+    ["Break-even econômico", be === null ? "—" : fmtMoney(be, cur, 4)],
+    ["Ganhos fiscais realizados (¥)", fmtYen(report.realizedGains)],
+    ["Perdas fiscais realizadas (¥)", fmtYen(report.realizedLosses)],
+    ["Resultado fiscal líquido (¥)", fmtYen(report.totalRealizedResult)],
+    ["Prejuízo a compensar (¥)", fmtYen(report.carriedLoss)],
+    ["Imposto estimado (¥)", fmtYen(report.estimatedTax)],
   ];
 
   doc.autoTable({
@@ -445,15 +527,20 @@ function exportPDF(ticker) {
     styles: { fontSize: 9 },
   });
 
-  const txnBody = ts.transactions.map((t) => [
-    t.id, t.date, t.side, t.quantity, fmtYen(t.unitPrice),
-    fmtYen(t.avgCostAfter, 4), t.taxResult === null ? "—" : fmtYen(t.taxResult),
-    fmtYen(t.cashBalanceAfter),
-  ]);
+  const txnHead = isUSD
+    ? [["ID", "Data", "Lado", "Qtd", "Preço", "Custo médio", "Câmbio", "Res. fiscal (¥)", "Caixa"]]
+    : [["ID", "Data", "Lado", "Qtd", "Preço", "Custo médio", "Res. fiscal", "Caixa"]];
+
+  const txnBody = ts.transactions.map((t) => {
+    const row = [t.id, t.date, t.side, t.quantity, fmtMoney(t.unitPrice, cur), fmtMoney(t.avgCostAfter, cur, 4)];
+    if (isUSD) row.push(`¥${t.fxRate.toFixed(2)}`);
+    row.push(t.taxResultJPY === null ? "—" : fmtYen(t.taxResultJPY), fmtMoney(t.cashBalanceAfter, cur));
+    return row;
+  });
 
   doc.autoTable({
     startY: doc.lastAutoTable.finalY + 10,
-    head: [["ID", "Data", "Lado", "Qtd", "Preço", "Custo médio", "Res. fiscal", "Caixa"]],
+    head: txnHead,
     body: txnBody,
     theme: "grid",
     headStyles: { fillColor: [28, 35, 49] },
@@ -462,7 +549,7 @@ function exportPDF(ticker) {
 
   doc.setFontSize(8);
   doc.text(
-    "Simulador educacional — não substitui cálculo fiscal profissional.",
+    "Simulador educacional — não substitui cálculo fiscal profissional. Resultado fiscal sempre em ¥, por lei japonesa.",
     14,
     doc.internal.pageSize.getHeight() - 10
   );
@@ -542,7 +629,14 @@ document.getElementById("btnNewTicker").addEventListener("click", () => {
     el("h3", {}, "Novo ticker"),
     el("div", { class: "field" }, [
       el("label", {}, "Código do ticker"),
-      el("input", { id: "newTickerCode", placeholder: "ex: 7203" }),
+      el("input", { id: "newTickerCode", placeholder: "ex: 7203 ou AAPL" }),
+    ]),
+    el("div", { class: "field" }, [
+      el("label", {}, "Moeda"),
+      el("select", { id: "newTickerCurrency" }, [
+        el("option", { value: "JPY" }, "¥ JPY (ação japonesa)"),
+        el("option", { value: "USD" }, "$ USD (ação americana)"),
+      ]),
     ]),
     el("div", { class: "field" }, [
       el("label", {}, "Quantidade inicial"),
@@ -556,6 +650,7 @@ document.getElementById("btnNewTicker").addEventListener("click", () => {
       el("button", {
         onclick: () => {
           const code = document.getElementById("newTickerCode").value.trim().toUpperCase();
+          const currency = document.getElementById("newTickerCurrency").value;
           const qty = parseInt(document.getElementById("newTickerQty").value, 10) || 0;
           const price = parseFloat(document.getElementById("newTickerPrice").value) || 0;
           if (!code) {
@@ -566,7 +661,7 @@ document.getElementById("btnNewTicker").addEventListener("click", () => {
             showToast("Esse ticker já existe.", true);
             return;
           }
-          getTickerState(code);
+          getTickerState(code, currency);
           if (qty > 0) buyOnTicker(code, qty, price);
           savePortfolio();
           STATE.activeTicker = code;
@@ -600,11 +695,17 @@ document.getElementById("btnSettings").addEventListener("click", () => {
       el("label", {}, "Imposto de reconstrução"),
       el("input", { id: "cfgRecon", type: "number", step: "0.00001", value: String(cfg.reconstructionTax) }),
     ]),
+    el("p", { class: "help-text" }, `Alíquota efetiva atual: ${fmtPct(effectiveRate(cfg))}`),
+    el("div", { class: "section-title" }, "Câmbio"),
+    el("div", { class: "field" }, [
+      el("label", {}, "Cotação USD/JPY (1 USD = ¥X)"),
+      el("input", { id: "cfgFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
+    ]),
+    el("p", { class: "help-text" }, "Usada como padrão em compras/vendas de tickers em USD, e no resultado fiscal em JPY (obrigatório por lei, independente da moeda do ativo). Ajuste para a cotação do dia da operação, se necessário."),
     el("div", { class: "field" }, [
       el("label", {}, "Preço de mercado de referência (opcional)"),
       el("input", { id: "cfgMarketPrice", type: "number", step: "0.01", value: String(STATE.marketPriceRef || "") }),
     ]),
-    el("p", { class: "help-text" }, `Alíquota efetiva atual: ${fmtPct(effectiveRate(cfg))}`),
     el("div", { style: "margin-top:16px;" }, [
       el("button", {
         onclick: () => {
@@ -613,8 +714,12 @@ document.getElementById("btnSettings").addEventListener("click", () => {
             localTax: parseFloat(document.getElementById("cfgLocal").value) || 0,
             reconstructionTax: parseFloat(document.getElementById("cfgRecon").value) || 0,
           };
+          STATE.fxConfig = {
+            usdJpy: parseFloat(document.getElementById("cfgFxRate").value) || DEFAULT_USD_JPY_RATE,
+          };
           STATE.marketPriceRef = parseFloat(document.getElementById("cfgMarketPrice").value) || 0;
           saveTaxConfig();
+          saveFxConfig();
           closeModal();
           renderMain();
           showToast("Configuração salva.");
@@ -632,33 +737,44 @@ function renderDashboard(container, ticker) {
   const ts = getTickerState(ticker);
   const report = buildTaxReport(ts.transactions, STATE.taxConfig);
   const be = breakEvenEconomic(snap);
+  const cur = snap.currency;
+  const isUSD = cur === "USD";
+  const fx = STATE.fxConfig.usdJpy;
 
   const card = el("div", { class: "card" }, [
-    el("h2", {}, `📊 ${ticker}`),
+    el("h2", {}, `📊 ${ticker} ${isUSD ? "🇺🇸" : "🇯🇵"}`),
     el("div", { class: "metric-grid" }, [
-      metricEl("Capital inicial", fmtYen(snap.initialCapital, 0)),
-      metricEl("Caixa acumulado", fmtYen(snap.cashBalance, 0), snap.cashBalance >= 0 ? "mint" : "danger"),
+      metricEl("Capital inicial", fmtMoney(snap.initialCapital, cur, 0)),
+      metricEl("Caixa acumulado", fmtMoney(snap.cashBalance, cur, 0), snap.cashBalance >= 0 ? "mint" : "danger"),
       metricEl("Ações restantes", String(snap.quantity)),
     ]),
-    el("div", { class: "section-title" }, "Visão fiscal"),
+    isUSD
+      ? el("p", { class: "help-text" },
+          `≈ ${fmtMoney(snap.cashBalance * fx, "JPY", 0)} de caixa e ` +
+          `${fmtMoney(snap.initialCapital * fx, "JPY", 0)} de capital, convertido à cotação atual (¥${fx.toFixed(2)}/US$).`)
+      : null,
+    el("div", { class: "section-title" }, "Visão fiscal (sempre em ¥, por lei japonesa)"),
     el("div", { class: "metric-grid" }, [
-      metricEl("Custo médio fiscal", fmtYen(snap.taxAvgCost, 3), "cyan"),
-      metricEl("Resultado fiscal realizado", fmtYen(report.totalRealizedResult), report.totalRealizedResult >= 0 ? "mint" : "danger"),
-      metricEl("Imposto estimado", fmtYen(report.estimatedTax), "magenta"),
+      metricEl("Custo médio fiscal", isUSD
+        ? `${fmtMoney(snap.taxAvgCost, "USD", 3)} (${fmtMoney(snap.taxAvgCostJPY, "JPY", 2)})`
+        : fmtMoney(snap.taxAvgCost, "JPY", 3), "cyan"),
+      metricEl("Resultado fiscal realizado", fmtMoney(report.totalRealizedResult, "JPY"), report.totalRealizedResult >= 0 ? "mint" : "danger"),
+      metricEl("Imposto estimado", fmtMoney(report.estimatedTax, "JPY"), "magenta"),
     ]),
     report.carriedLoss > 0
-      ? el("p", { class: "help-text" }, `Prejuízo a compensar: ${fmtYen(report.carriedLoss)}`)
+      ? el("p", { class: "help-text" }, `Prejuízo a compensar: ${fmtMoney(report.carriedLoss, "JPY")}`)
       : null,
     el("div", { class: "section-title" }, "Visão econômica e de equilíbrio"),
     el("div", { class: "metric-grid" }, [
-      metricEl("Break-even fiscal", fmtYen(breakEvenFiscal(snap), 3)),
-      metricEl("Break-even econômico", be === null ? "—" : fmtYen(be, 3), "cyan"),
+      metricEl("Break-even fiscal", fmtMoney(breakEvenFiscal(snap), cur, 3)),
+      metricEl("Break-even econômico", be === null ? "—" : fmtMoney(be, cur, 3), "cyan"),
       STATE.marketPriceRef
-        ? metricEl("Result. econ. @ ref.", fmtYen(economicResult(snap, STATE.marketPriceRef)), economicResult(snap, STATE.marketPriceRef) >= 0 ? "mint" : "danger")
+        ? metricEl("Result. econ. @ ref.", fmtMoney(economicResult(snap, STATE.marketPriceRef), cur), economicResult(snap, STATE.marketPriceRef) >= 0 ? "mint" : "danger")
         : metricEl("Result. econ. @ ref.", "—"),
     ]),
     el("p", { class: "disclaimer" },
       "⚠️ Custo médio fiscal menor ≠ lucro econômico. Lucro de caixa numa operação ≠ lucro fiscal tributável. " +
+      (isUSD ? "Resultado fiscal e imposto sempre em ¥, convertidos pela cotação de cada operação. " : "") +
       "Simulador educacional — não substitui cálculo fiscal profissional."),
   ]);
   container.appendChild(card);
@@ -717,23 +833,34 @@ function renderTabs(container, ticker) {
 
 function renderTradeTab(container, ticker) {
   const ts = getTickerState(ticker);
+  const isUSD = ts.currency === "USD";
   const wrap = el("div", { class: "row2" });
 
   // Compra
+  const buyFields = [
+    el("div", { class: "field" }, [el("label", {}, "Quantidade"), el("input", { id: "buyQty", type: "number", value: "5", min: "1" })]),
+    el("div", { class: "field" }, [el("label", {}, `Preço (${isUSD ? "US$" : "¥"})`), el("input", { id: "buyPrice", type: "number", value: "100", step: "0.01", min: "0" })]),
+    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "buyFee", type: "number", value: "0", step: "0.01", min: "0" })]),
+  ];
+  if (isUSD) {
+    buyFields.push(el("div", { class: "field" }, [
+      el("label", {}, "Câmbio USD/JPY nesta operação"),
+      el("input", { id: "buyFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
+    ]));
+  }
   const buyCard = el("div", { class: "card" }, [
     el("h4", {}, "Nova compra"),
-    el("div", { class: "field" }, [el("label", {}, "Quantidade"), el("input", { id: "buyQty", type: "number", value: "5", min: "1" })]),
-    el("div", { class: "field" }, [el("label", {}, "Preço"), el("input", { id: "buyPrice", type: "number", value: "100", step: "0.01", min: "0" })]),
-    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "buyFee", type: "number", value: "0", step: "0.01", min: "0" })]),
+    ...buyFields,
     el("div", { style: "margin-top:14px;" }, [
       el("button", {
         onclick: () => {
           const qty = parseInt(document.getElementById("buyQty").value, 10);
           const price = parseFloat(document.getElementById("buyPrice").value);
           const fee = parseFloat(document.getElementById("buyFee").value) || 0;
+          const fxRate = isUSD ? (parseFloat(document.getElementById("buyFxRate").value) || STATE.fxConfig.usdJpy) : null;
           if (!qty || qty <= 0 || Number.isNaN(price)) { showToast("Preencha quantidade e preço válidos.", true); return; }
-          buyOnTicker(ticker, qty, price, fee);
-          showToast(`Compra registrada: ${qty} @ ${fmtYen(price)}`);
+          buyOnTicker(ticker, qty, price, fee, null, fxRate);
+          showToast(`Compra registrada: ${qty} @ ${fmtMoney(price, ts.currency)}`);
           renderMain();
         },
       }, "COMPRAR"),
@@ -741,11 +868,20 @@ function renderTradeTab(container, ticker) {
   ]);
 
   // Venda
+  const sellFields = [
+    el("div", { class: "field" }, [el("label", {}, `Quantidade (máx ${ts.quantity})`), el("input", { id: "sellQty", type: "number", value: "1", min: "1", max: String(ts.quantity || 1) })]),
+    el("div", { class: "field" }, [el("label", {}, `Preço (${isUSD ? "US$" : "¥"})`), el("input", { id: "sellPrice", type: "number", value: "100", step: "0.01", min: "0" })]),
+    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "sellFee", type: "number", value: "0", step: "0.01", min: "0" })]),
+  ];
+  if (isUSD) {
+    sellFields.push(el("div", { class: "field" }, [
+      el("label", {}, "Câmbio USD/JPY nesta operação"),
+      el("input", { id: "sellFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
+    ]));
+  }
   const sellCard = el("div", { class: "card" }, [
     el("h4", {}, "Nova venda"),
-    el("div", { class: "field" }, [el("label", {}, `Quantidade (máx ${ts.quantity})`), el("input", { id: "sellQty", type: "number", value: "1", min: "1", max: String(ts.quantity || 1) })]),
-    el("div", { class: "field" }, [el("label", {}, "Preço"), el("input", { id: "sellPrice", type: "number", value: "100", step: "0.01", min: "0" })]),
-    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "sellFee", type: "number", value: "0", step: "0.01", min: "0" })]),
+    ...sellFields,
     el("div", { style: "margin-top:14px;" }, [
       el("button", {
         disabled: ts.quantity === 0,
@@ -753,10 +889,11 @@ function renderTradeTab(container, ticker) {
           const qty = parseInt(document.getElementById("sellQty").value, 10);
           const price = parseFloat(document.getElementById("sellPrice").value);
           const fee = parseFloat(document.getElementById("sellFee").value) || 0;
+          const fxRate = isUSD ? (parseFloat(document.getElementById("sellFxRate").value) || STATE.fxConfig.usdJpy) : null;
           if (!qty || qty <= 0 || Number.isNaN(price)) { showToast("Preencha quantidade e preço válidos.", true); return; }
           if (qty > ts.quantity) { showToast("Quantidade excede a posição atual.", true); return; }
-          sellOnTicker(ticker, qty, price, fee);
-          showToast(`Venda registrada: ${qty} @ ${fmtYen(price)}`);
+          sellOnTicker(ticker, qty, price, fee, null, fxRate);
+          showToast(`Venda registrada: ${qty} @ ${fmtMoney(price, ts.currency)}`);
           renderMain();
         },
       }, "VENDER"),
@@ -808,10 +945,11 @@ function renderSimulateTab(container, ticker) {
 
 function renderTargetTab(container, ticker) {
   const snap = snapshotOf(ticker);
+  const cur = snap.currency;
   const card = el("div", { class: "card" }, [
     el("h4", {}, "Objetivo de lucro"),
     el("div", { class: "row2" }, [
-      el("div", { class: "field" }, [el("label", {}, "Lucro desejado (¥)"), el("input", { id: "targetProfit", type: "number", value: "1000", step: "100" })]),
+      el("div", { class: "field" }, [el("label", {}, `Lucro desejado (${cur === "USD" ? "US$" : "¥"})`), el("input", { id: "targetProfit", type: "number", value: "1000", step: "100" })]),
       el("div", { class: "field" }, [el("label", {}, "ou percentual do capital (%)"), el("input", { id: "targetPct", type: "number", placeholder: "ex: 10" })]),
     ]),
     el("div", { id: "targetResult", style: "margin-top:14px;font-size:15px;" }),
@@ -831,7 +969,7 @@ function renderTargetTab(container, ticker) {
             return;
           }
           const target = targetPriceForProfit(snap, desired);
-          resultEl.innerHTML = `Preço necessário nas <b>${snap.quantity}</b> ações restantes: <span style="color:var(--cyan);font-weight:700;">${fmtYen(target, 3)}</span>`;
+          resultEl.innerHTML = `Preço necessário nas <b>${snap.quantity}</b> ações restantes: <span style="color:var(--cyan);font-weight:700;">${fmtMoney(target, cur, 3)}</span>`;
         },
       }, "CALCULAR"),
     ]),
@@ -911,6 +1049,7 @@ function renderChartsTab(container, ticker) {
 
 function renderScenariosTab(container, ticker) {
   const snap = snapshotOf(ticker);
+  const cur = snap.currency;
   const card = el("div", { class: "card" }, [
     el("h4", {}, "Simular cenários"),
     el("div", { class: "row3" }, [
@@ -928,7 +1067,7 @@ function renderScenariosTab(container, ticker) {
           const prices = [];
           for (let p = pMin; p <= pMax + 1e-9; p += step) prices.push(Math.round(p * 10000) / 10000);
           const table = scenarioTable(snap, prices);
-          renderScenarioResult(table);
+          renderScenarioResult(table, cur);
         },
       }, "SIMULAR CENÁRIO"),
     ]),
@@ -937,7 +1076,7 @@ function renderScenariosTab(container, ticker) {
   container.appendChild(card);
 }
 
-function renderScenarioResult(table) {
+function renderScenarioResult(table, currency = "JPY") {
   const resultDiv = document.getElementById("scenarioResult");
   resultDiv.innerHTML = "";
   resultDiv.appendChild(el("div", { class: "chart-wrap" }, el("canvas", { id: "chartScenario" })));
@@ -949,9 +1088,9 @@ function renderScenarioResult(table) {
       el("th", {}, "Patrimônio"), el("th", {}, "Lucro"),
     ])),
     el("tbody", {}, table.map((r) => el("tr", {}, [
-      el("td", {}, fmtYen(r.price)), el("td", {}, fmtYen(r.positionValue)), el("td", {}, fmtYen(r.cash)),
-      el("td", {}, fmtYen(r.patrimony)),
-      el("td", { style: `color:${r.profit >= 0 ? "var(--mint)" : "var(--danger)"}` }, fmtYen(r.profit)),
+      el("td", {}, fmtMoney(r.price, currency)), el("td", {}, fmtMoney(r.positionValue, currency)), el("td", {}, fmtMoney(r.cash, currency)),
+      el("td", {}, fmtMoney(r.patrimony, currency)),
+      el("td", { style: `color:${r.profit >= 0 ? "var(--mint)" : "var(--danger)"}` }, fmtMoney(r.profit, currency)),
     ]))),
   ]);
   tableWrap.appendChild(tbl);
@@ -973,29 +1112,39 @@ function renderScenarioResult(table) {
 
 function renderHistoryTab(container, ticker) {
   const ts = getTickerState(ticker);
+  const cur = ts.currency;
+  const isUSD = cur === "USD";
   if (ts.transactions.length === 0) {
     container.appendChild(el("div", { class: "empty-state" }, "Nenhuma operação registrada ainda."));
     return;
   }
+  const headerCells = [
+    el("th", {}, "Nº"), el("th", {}, "Data"), el("th", {}, "Tipo"), el("th", {}, "Qtd"),
+    el("th", {}, "Preço"), el("th", {}, "Caixa (fluxo)"), el("th", {}, "Qtd. posição"),
+    el("th", {}, "Custo médio"),
+  ];
+  if (isUSD) headerCells.push(el("th", {}, "Câmbio"));
+  headerCells.push(el("th", {}, "Res. fiscal (¥)"));
+
   const card = el("div", { class: "card" }, [
     el("h4", {}, "Histórico de operações"),
     el("div", { class: "table-scroll" }, el("table", {}, [
-      el("thead", {}, el("tr", {}, [
-        el("th", {}, "Nº"), el("th", {}, "Data"), el("th", {}, "Tipo"), el("th", {}, "Qtd"),
-        el("th", {}, "Preço"), el("th", {}, "Caixa (fluxo)"), el("th", {}, "Qtd. posição"),
-        el("th", {}, "Custo médio"), el("th", {}, "Res. fiscal"),
-      ])),
-      el("tbody", {}, [...ts.transactions].reverse().map((t) => el("tr", {}, [
-        el("td", {}, String(t.id)),
-        el("td", {}, t.date),
-        el("td", {}, el("span", { class: `badge ${t.side === "BUY" ? "buy" : "sell"}` }, t.side === "BUY" ? "COMPRA" : "VENDA")),
-        el("td", {}, String(t.quantity)),
-        el("td", {}, fmtYen(t.unitPrice)),
-        el("td", { style: t.cashFlow >= 0 ? "color:var(--mint)" : "color:var(--danger)" }, fmtYen(t.cashFlow)),
-        el("td", {}, String(t.quantityAfter)),
-        el("td", {}, fmtYen(t.avgCostAfter, 3)),
-        el("td", {}, t.taxResult === null ? "—" : fmtYen(t.taxResult)),
-      ]))),
+      el("thead", {}, el("tr", {}, headerCells)),
+      el("tbody", {}, [...ts.transactions].reverse().map((t) => {
+        const rowCells = [
+          el("td", {}, String(t.id)),
+          el("td", {}, t.date),
+          el("td", {}, el("span", { class: `badge ${t.side === "BUY" ? "buy" : "sell"}` }, t.side === "BUY" ? "COMPRA" : "VENDA")),
+          el("td", {}, String(t.quantity)),
+          el("td", {}, fmtMoney(t.unitPrice, cur)),
+          el("td", { style: t.cashFlow >= 0 ? "color:var(--mint)" : "color:var(--danger)" }, fmtMoney(t.cashFlow, cur)),
+          el("td", {}, String(t.quantityAfter)),
+          el("td", {}, fmtMoney(t.avgCostAfter, cur, 3)),
+        ];
+        if (isUSD) rowCells.push(el("td", {}, `¥${t.fxRate.toFixed(2)}`));
+        rowCells.push(el("td", {}, t.taxResultJPY === null ? "—" : fmtYen(t.taxResultJPY)));
+        return el("tr", {}, rowCells);
+      })),
     ])),
   ]);
   container.appendChild(card);
