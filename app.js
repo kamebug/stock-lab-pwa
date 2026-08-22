@@ -23,7 +23,9 @@ function fmtMoney(v, currency = "JPY", decimals = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const symbol = currency === "USD" ? "$" : "¥";
   const sign = v < 0 ? "-" : "";
-  return `${sign}${symbol}${Math.abs(v).toLocaleString("pt-BR", {
+  // Convenção internacional (não brasileira): vírgula = milhar, ponto = decimal.
+  // Vale tanto para USD quanto para JPY.
+  return `${sign}${symbol}${Math.abs(v).toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   })}`;
@@ -34,7 +36,7 @@ function fmtYen(v, decimals = 2) {
 }
 
 function fmtPct(v) {
-  return `${(v * 100).toLocaleString("pt-BR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}%`;
+  return `${(v * 100).toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}%`;
 }
 
 function showToast(msg, isError = false) {
