@@ -302,16 +302,23 @@ function breakEvenFiscal(snap) {
 
 function breakEvenEconomic(snap) {
   if (snap.quantity === 0) return null;
-  return (snap.initialCapital - snap.cashBalance) / snap.quantity;
+  // O caixa acumulado já inclui o desembolso da compra inicial (fica negativo
+  // logo de cara). Por isso o break-even é o preço que zera o resultado
+  // econômico total: cashBalance + quantidade*p = 0  →  p = -cashBalance/quantidade.
+  // (NÃO subtrair capital inicial de novo — ele já está embutido no caixa.)
+  return -snap.cashBalance / snap.quantity;
 }
 
 function targetPriceForProfit(snap, desiredProfit) {
   if (snap.quantity === 0) return null;
-  return (snap.initialCapital + desiredProfit - snap.cashBalance) / snap.quantity;
+  // cashBalance + quantidade*p = lucro desejado  →  p = (lucro - cashBalance)/quantidade
+  return (desiredProfit - snap.cashBalance) / snap.quantity;
 }
 
 function patrimony(snap, marketPrice) {
-  return snap.cashBalance + snap.quantity * marketPrice;
+  // Patrimônio real = (capital inicial + caixa acumulado) [= dinheiro que
+  // sobrou em conta] + valor de mercado da posição restante.
+  return snap.initialCapital + snap.cashBalance + snap.quantity * marketPrice;
 }
 
 function economicResult(snap, marketPrice) {
@@ -321,7 +328,7 @@ function economicResult(snap, marketPrice) {
 function scenarioTable(snap, prices) {
   return prices.map((p) => {
     const positionValue = snap.quantity * p;
-    const total = snap.cashBalance + positionValue;
+    const total = snap.initialCapital + snap.cashBalance + positionValue;
     const profit = total - snap.initialCapital;
     return { price: p, positionValue, cash: snap.cashBalance, patrimony: total, profit };
   });
