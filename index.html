@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Stock Lab — Simulador de Estratégia</title>
+<meta name="theme-color" content="#080B10" />
+<meta name="description" content="Simulador de estratégia de compra e venda de ações: custo médio, caixa, fiscal e break-even." />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
+<style>
+:root{
+  --bg:#080B10;
+  --card:#1C2331;
+  --card-alt:#141A26;
+  --cyan:#00D0E8;
+  --magenta:#E573A7;
+  --mint:#38F39C;
+  --text:#E8ECF1;
+  --text-dim:#8B96AA;
+  --danger:#FF6B6B;
+  --border:#2A3446;
+  --radius:14px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  padding-bottom:70px;
+  min-height:100vh;
+}
+h1,h2,h3,h4{margin:0 0 8px 0;font-weight:600;}
+a{color:var(--cyan);}
+button{
+  font-family:inherit;cursor:pointer;border:none;border-radius:10px;
+  padding:11px 16px;font-size:14px;font-weight:600;
+  background:var(--cyan);color:#00131A;
+  transition:transform .1s ease, opacity .15s ease;
+}
+button:active{transform:scale(0.97);}
+button.secondary{background:var(--card-alt);color:var(--text);border:1px solid var(--border);}
+button.danger{background:var(--danger);color:#2A0000;}
+button:disabled{opacity:.4;cursor:not-allowed;}
+input,select{
+  width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);
+  background:var(--card-alt);color:var(--text);font-size:14px;font-family:inherit;
+}
+label{display:block;font-size:12.5px;color:var(--text-dim);margin-bottom:4px;margin-top:10px;}
+.field{margin-bottom:4px;}
+
+/* Header */
+header{
+  position:sticky;top:0;z-index:20;
+  background:rgba(8,11,16,0.92);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--border);
+  padding:12px 16px;
+}
+.header-row{display:flex;align-items:center;gap:10px;justify-content:space-between;}
+.brand{display:flex;align-items:center;gap:8px;}
+.brand-dot{width:10px;height:10px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);}
+.brand-title{font-size:16px;font-weight:700;letter-spacing:.3px;}
+.ticker-select-row{display:flex;gap:8px;margin-top:10px;}
+.ticker-select-row select{flex:1;}
+.icon-btn{
+  background:var(--card-alt);border:1px solid var(--border);color:var(--text);
+  padding:8px 12px;border-radius:10px;font-size:16px;line-height:1;
+}
+
+main{max-width:900px;margin:0 auto;padding:14px 14px 0;}
+
+/* Cards / dashboard */
+.card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:16px;margin-bottom:14px;
+}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:8px;}
+.metric{
+  background:var(--card-alt);border-radius:10px;padding:10px 12px;
+}
+.metric .label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;}
+.metric .value{font-size:18px;font-weight:700;margin-top:2px;}
+.value.cyan{color:var(--cyan);}
+.value.mint{color:var(--mint);}
+.value.magenta{color:var(--magenta);}
+.value.danger{color:var(--danger);}
+.section-title{font-size:13px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;}
+.disclaimer{font-size:11.5px;color:var(--text-dim);margin-top:10px;line-height:1.5;}
+
+/* Tabs */
+.tabs{display:flex;overflow-x:auto;gap:6px;padding:2px 0 12px;-webkit-overflow-scrolling:touch;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab-btn{
+  flex:none;background:var(--card);border:1px solid var(--border);color:var(--text-dim);
+  padding:9px 14px;border-radius:20px;font-size:13px;font-weight:600;white-space:nowrap;
+}
+.tab-btn.active{background:var(--cyan);color:#00131A;border-color:var(--cyan);}
+.tab-panel{display:none;}
+.tab-panel.active{display:block;}
+
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+@media (max-width:520px){.row2,.row3{grid-template-columns:1fr;}}
+
+.chart-wrap{position:relative;height:220px;margin-top:10px;}
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:640px){.chart-grid{grid-template-columns:1fr;}}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px;}
+th,td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap;}
+th:first-child,td:first-child{text-align:left;}
+th{color:var(--text-dim);font-weight:600;font-size:11px;text-transform:uppercase;}
+tbody tr:hover{background:var(--card-alt);}
+.table-scroll{overflow-x:auto;}
+.badge{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700;}
+.badge.buy{background:rgba(0,208,232,0.15);color:var(--cyan);}
+.badge.sell{background:rgba(229,115,167,0.15);color:var(--magenta);}
+
+.empty-state{text-align:center;color:var(--text-dim);padding:30px 10px;font-size:13.5px;}
+
+.toast{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  background:var(--card);border:1px solid var(--cyan);color:var(--text);
+  padding:10px 18px;border-radius:10px;font-size:13.5px;z-index:100;
+  opacity:0;pointer-events:none;transition:opacity .25s ease, bottom .25s ease;
+  box-shadow:0 4px 20px rgba(0,0,0,.4);
+}
+.toast.show{opacity:1;bottom:30px;}
+.toast.error{border-color:var(--danger);}
+
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;
+  display:none;align-items:flex-end;justify-content:center;
+}
+.modal-overlay.show{display:flex;}
+.modal{
+  background:var(--card);border:1px solid var(--border);border-radius:16px 16px 0 0;
+  width:100%;max-width:900px;padding:18px;max-height:85vh;overflow-y:auto;
+  animation:slideUp .2s ease;
+}
+@keyframes slideUp{from{transform:translateY(30px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+.modal-close{float:right;background:none;color:var(--text-dim);padding:4px 8px;font-size:18px;}
+.footer-note{text-align:center;color:var(--text-dim);font-size:11px;padding:20px 10px 30px;}
+.file-input-wrap{
+  border:1.5px dashed var(--border);border-radius:12px;padding:20px;text-align:center;color:var(--text-dim);
+  font-size:13px;margin-top:10px;
+}
+.help-text{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.5;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div class="brand-title">STOCK LAB</div>
+    </div>
+    <button class="icon-btn" id="btnSettings" title="Configurações fiscais">⚙️</button>
+  </div>
+  <div class="ticker-select-row">
+    <select id="tickerSelect"></select>
+    <button class="icon-btn" id="btnNewTicker" title="Novo ticker">＋</button>
+  </div>
+</header>
+
+<main id="mainContent">
+  <!-- preenchido via JS -->
+</main>
+
+<div class="footer-note">Stock Lab · simulador educacional · não substitui cálculo fiscal profissional</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

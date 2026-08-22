@@ -1,0 +1,15 @@
+{
+  "name": "Stock Lab - Simulador de Estratégia",
+  "short_name": "Stock Lab",
+  "description": "Simulador de estratégia de compra e venda de ações: custo médio, caixa, fiscal e break-even.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#080B10",
+  "theme_color": "#080B10",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
