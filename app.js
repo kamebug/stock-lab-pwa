@@ -954,6 +954,14 @@ function renderDashboard(container, ticker) {
       metricEl("Caixa acumulado", fmtMoney(snap.cashBalance, cur, 0), snap.cashBalance >= 0 ? "mint" : "danger"),
       metricEl("Ações restantes", String(snap.quantity)),
     ]),
+    el("div", { class: "metric-grid", style: "margin-top:8px;" }, [
+      metricEl(
+        "Lucro total das operações",
+        fmtMoney(nativeRealizedResult, cur),
+        nativeRealizedResult >= 0 ? "mint" : "danger",
+      ),
+    ]),
+    el("p", { class: "help-text" }, "Soma do lucro/prejuízo de cada venda já feita (preço de venda − custo médio no momento), na moeda do próprio ticker."),
     isUSD
       ? el("p", { class: "help-text" },
           `≈ ${fmtMoney(snap.cashBalance * fx, "JPY", 0)} de caixa e ` +
@@ -1478,7 +1486,8 @@ function renderHistoryTab(container, ticker) {
     el("th", {}, "Custo médio"),
   ];
   if (isUSD) headerCells.push(el("th", {}, "Câmbio"));
-  headerCells.push(el("th", {}, "Res. fiscal (¥)"));
+  headerCells.push(el("th", {}, `Lucro (${isUSD ? "US$" : "¥"})`));
+  if (isUSD) headerCells.push(el("th", {}, "Lucro (¥)"));
   headerCells.push(el("th", {}, ""));
 
   const card = el("div", { class: "card" }, [
@@ -1498,7 +1507,14 @@ function renderHistoryTab(container, ticker) {
           el("td", {}, fmtMoney(t.avgCostAfter, cur, 3)),
         ];
         if (isUSD) rowCells.push(el("td", {}, `¥${t.fxRate.toFixed(2)}`));
-        rowCells.push(el("td", {}, t.taxResultJPY === null ? "—" : fmtYen(t.taxResultJPY)));
+        rowCells.push(el("td", {
+          style: t.taxResult === null ? "" : (t.taxResult >= 0 ? "color:var(--mint)" : "color:var(--danger)"),
+        }, t.taxResult === null ? "—" : fmtMoney(t.taxResult, cur)));
+        if (isUSD) {
+          rowCells.push(el("td", {
+            style: t.taxResultJPY === null ? "" : (t.taxResultJPY >= 0 ? "color:var(--mint)" : "color:var(--danger)"),
+          }, t.taxResultJPY === null ? "—" : fmtYen(t.taxResultJPY)));
+        }
         rowCells.push(el("td", {}, el("button", {
           class: "icon-btn",
           style: "padding:4px 8px;font-size:13px;",
