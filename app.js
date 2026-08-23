@@ -441,6 +441,58 @@ function commitPreview(ticker, clone) {
   savePortfolio();
 }
 
+/* Edita a primeira operação (a que define a posição inicial: quantidade
+   e preço médio de entrada) e reconstrói TODO o histórico a partir dela,
+   reaplicando as operações seguintes na mesma ordem — reaproveita a
+   mesma lógica de compra/venda já testada, então custo médio, caixa e
+   fiscal ficam corretos para a posição inteira, não só a primeira linha.
+   Roda tudo numa cópia isolada primeiro: se uma venda posterior deixar
+   de caber (ex: reduziu a quantidade inicial abaixo do que já foi
+   vendido depois), nada é alterado e um erro é devolvido. */
+function editInitialPosition(ticker, newQuantity, newPrice) {
+  const ts = getTickerState(ticker);
+  if (ts.transactions.length === 0) return { ok: false, error: "Sem operações para editar." };
+
+  const original = ts.transactions.map((t) => ({
+    side: t.side,
+    quantity: t.quantity,
+    unitPrice: t.unitPrice,
+    fees: t.fees,
+    date: t.date,
+    fxRate: t.fxRate,
+  }));
+  original[0].quantity = newQuantity;
+  original[0].unitPrice = newPrice;
+
+  const clone = {
+    ticker: ts.ticker,
+    currency: ts.currency,
+    quantity: 0,
+    avgCost: 0,
+    avgCostJPY: 0,
+    cashBalance: 0,
+    initialCapital: 0,
+    marketPriceRef: ts.marketPriceRef,
+    transactions: [],
+  };
+
+  try {
+    for (const p of original) {
+      if (p.side === "BUY") {
+        applyBuyTxn(clone, p.quantity, p.unitPrice, p.fees, p.date, p.fxRate);
+      } else {
+        applySellTxn(clone, p.quantity, p.unitPrice, p.fees, p.date, p.fxRate);
+      }
+    }
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+
+  STATE.portfolio.tickers[ticker] = clone;
+  savePortfolio();
+  return { ok: true };
+}
+
 /* ---------------- CSV Import (formato: date,ticker,side,quantity,price,fee,currency) ---------------- */
 
 function parseCSV(text) {
@@ -872,7 +924,15 @@ function renderDashboard(container, ticker) {
   }
 
   const card = el("div", { class: "card" }, [
-    el("h2", {}, `📊 ${ticker} ${isUSD ? "🇺🇸" : "🇯🇵"}`),
+    el("div", { style: "display:flex;justify-content:space-between;align-items:center;" }, [
+      el("h2", {}, `📊 ${ticker} ${isUSD ? "🇺🇸" : "🇯🇵"}`),
+      el("button", {
+        class: "icon-btn",
+        style: "padding:6px 10px;font-size:14px;",
+        title: "Editar posição inicial",
+        onclick: () => openEditInitialPositionModal(ticker),
+      }, "✏️"),
+    ]),
     el("div", { class: "metric-grid" }, [
       metricEl("Capital inicial", fmtMoney(snap.initialCapital, cur, 0)),
       metricEl("Caixa acumulado", fmtMoney(snap.cashBalance, cur, 0), snap.cashBalance >= 0 ? "mint" : "danger"),
@@ -920,6 +980,53 @@ function renderDashboard(container, ticker) {
       "Simulador educacional — não substitui cálculo fiscal profissional."),
   ]);
   container.appendChild(card);
+}
+
+function openEditInitialPositionModal(ticker) {
+  const ts = getTickerState(ticker);
+  const first = ts.transactions[0];
+  const isUSD = ts.currency === "USD";
+  const symbol = isUSD ? "US$" : "¥";
+
+  const wrap = el("div", {}, [
+    el("h3", {}, `Editar posição inicial — ${ticker}`),
+    el("p", { class: "help-text" },
+      "Isso corrige a primeira compra registrada e recalcula todo o histórico " +
+      "seguinte (custo médio, caixa, fiscal) a partir dela."),
+    el("div", { class: "field" }, [
+      el("label", {}, "Quantidade inicial"),
+      el("input", { id: "editInitQty", type: "text", inputmode: "numeric", value: String(first.quantity) }),
+    ]),
+    el("div", { class: "field" }, [
+      el("label", {}, `Preço médio inicial (${symbol})`),
+      el("input", { id: "editInitPrice", type: "text", inputmode: "decimal", value: String(first.unitPrice) }),
+    ]),
+    el("div", { id: "editInitError" }),
+    el("div", { style: "margin-top:16px;" }, [
+      el("button", {
+        onclick: () => {
+          const newQty = parseLocaleInt(document.getElementById("editInitQty").value);
+          const newPrice = parseLocaleFloat(document.getElementById("editInitPrice").value);
+          if (!newQty || newQty <= 0 || Number.isNaN(newPrice) || newPrice < 0) {
+            showToast("Preencha quantidade e preço válidos.", true);
+            return;
+          }
+          const result = editInitialPosition(ticker, newQty, newPrice);
+          if (!result.ok) {
+            document.getElementById("editInitError").appendChild(
+              el("p", { class: "help-text", style: "color:var(--danger);" },
+                `Não foi possível aplicar: ${result.error} — alguma operação posterior deixaria de caber com esses valores.`)
+            );
+            return;
+          }
+          closeModal();
+          renderMain();
+          showToast("Posição inicial atualizada.");
+        },
+      }, "SALVAR"),
+    ]),
+  ]);
+  openModal(wrap);
 }
 
 function metricEl(label, value, colorClass = "") {
