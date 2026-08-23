@@ -918,6 +918,9 @@ function renderDashboard(container, ticker) {
   const isUSD = cur === "USD";
   const fx = STATE.fxConfig.usdJpy;
   const refPrice = ts.marketPriceRef || 0;
+  const nativeRealizedResult = ts.transactions
+    .filter((t) => t.side === "SELL")
+    .reduce((sum, t) => sum + (t.taxResult || 0), 0);
 
   const econResultBlock = [];
   if (refPrice > 0) {
@@ -961,7 +964,9 @@ function renderDashboard(container, ticker) {
       metricEl("Custo médio fiscal", isUSD
         ? `${fmtMoney(snap.taxAvgCost, "USD", 3)} (${fmtMoney(snap.taxAvgCostJPY, "JPY", 2)})`
         : fmtMoney(snap.taxAvgCost, "JPY", 3), "cyan"),
-      metricEl("Resultado fiscal realizado", fmtMoney(report.totalRealizedResult, "JPY"), report.totalRealizedResult >= 0 ? "mint" : "danger"),
+      metricEl("Resultado fiscal realizado", isUSD
+        ? `${fmtMoney(report.totalRealizedResult, "JPY")} (${fmtMoney(nativeRealizedResult, "USD")})`
+        : fmtMoney(report.totalRealizedResult, "JPY"), report.totalRealizedResult >= 0 ? "mint" : "danger"),
       metricEl("Imposto estimado", fmtMoney(report.estimatedTax, "JPY"), "magenta"),
     ]),
     report.carriedLoss > 0
