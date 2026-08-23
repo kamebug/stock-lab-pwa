@@ -219,8 +219,11 @@ function nextTxnId(ts) {
   return ts.transactions.length + 1;
 }
 
-function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
-  const ts = getTickerState(ticker);
+/* Aplica uma compra/venda a um objeto de estado (ts) qualquer — pode ser
+   o ticker real (via getTickerState) ou uma CÓPIA usada só para prévia,
+   sem persistir nada. Quem chama decide se e quando salvar. */
+
+function applyBuyTxn(ts, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
   const effFxRate = ts.currency === "USD" ? (fxRate || STATE.fxConfig.usdJpy) : 1;
   const isFirstBuy = ts.quantity === 0 && ts.transactions.length === 0;
   const r = applyBuy(ts, quantity, unitPrice, effFxRate, fees);
@@ -231,7 +234,7 @@ function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate 
   const txn = {
     id: nextTxnId(ts),
     date: date || todayISO(),
-    ticker,
+    ticker: ts.ticker,
     side: "BUY",
     quantity,
     unitPrice,
@@ -252,12 +255,10 @@ function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate 
     cashBalanceAfter: ts.cashBalance,
   };
   ts.transactions.push(txn);
-  savePortfolio();
   return txn;
 }
 
-function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
-  const ts = getTickerState(ticker);
+function applySellTxn(ts, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
   const effFxRate = ts.currency === "USD" ? (fxRate || STATE.fxConfig.usdJpy) : 1;
   const r = applySell(ts, quantity, unitPrice, effFxRate, fees);
   const cashFlow = r.grossProceeds - fees;
@@ -266,7 +267,7 @@ function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate
   const txn = {
     id: nextTxnId(ts),
     date: date || todayISO(),
-    ticker,
+    ticker: ts.ticker,
     side: "SELL",
     quantity,
     unitPrice,
@@ -287,14 +288,26 @@ function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate
     cashBalanceAfter: ts.cashBalance,
   };
   ts.transactions.push(txn);
+  return txn;
+}
+
+function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
+  const ts = getTickerState(ticker);
+  const txn = applyBuyTxn(ts, quantity, unitPrice, fees, date, fxRate);
+  savePortfolio();
+  return txn;
+}
+
+function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
+  const ts = getTickerState(ticker);
+  const txn = applySellTxn(ts, quantity, unitPrice, fees, date, fxRate);
   savePortfolio();
   return txn;
 }
 
 /* ---------------- Economic Metrics ---------------- */
 
-function snapshotOf(ticker) {
-  const ts = getTickerState(ticker);
+function snapshotFromState(ts) {
   return {
     currency: ts.currency,
     initialCapital: ts.initialCapital,
@@ -303,6 +316,10 @@ function snapshotOf(ticker) {
     taxAvgCost: ts.avgCost,
     taxAvgCostJPY: ts.avgCostJPY,
   };
+}
+
+function snapshotOf(ticker) {
+  return snapshotFromState(getTickerState(ticker));
 }
 
 function breakEvenFiscal(snap) {
@@ -369,19 +386,45 @@ function buildTaxReport(transactions, taxConfig) {
 
 /* ---------------- Simulator: ciclos automáticos ---------------- */
 
-function runCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles) {
+/* Roda os ciclos num objeto de estado (ts) qualquer, sem persistir nada.
+   Usado tanto pela prévia (num clone) quanto pela aplicação real. */
+function runCyclesOnState(ts, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFxRate = null, sellFxRate = null) {
   const results = [];
   for (let i = 1; i <= cycles; i++) {
-    const ts = getTickerState(ticker);
-    if (ts.quantity < sellQty) {
-      showToast(`Parado no ciclo ${i}: posição insuficiente para vender.`, true);
-      break;
-    }
-    buyOnTicker(ticker, buyQty, buyPrice);
-    const sellTxn = sellOnTicker(ticker, sellQty, sellPrice);
+    if (ts.quantity < sellQty) break;
+    applyBuyTxn(ts, buyQty, buyPrice, 0, null, buyFxRate);
+    const sellTxn = applySellTxn(ts, sellQty, sellPrice, 0, null, sellFxRate);
     results.push(sellTxn);
   }
   return results;
+}
+
+function runCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFxRate = null, sellFxRate = null) {
+  const ts = getTickerState(ticker);
+  const results = runCyclesOnState(ts, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFxRate, sellFxRate);
+  if (results.length < cycles) {
+    showToast(`Parado no ciclo ${results.length + 1}: posição insuficiente para vender.`, true);
+  }
+  savePortfolio();
+  return results;
+}
+
+/* Prévia: roda os ciclos numa CÓPIA do ticker (clone via JSON), sem tocar
+   no estado real nem no localStorage. Devolve o clone já simulado, pra
+   comparação antes/depois na UI. */
+function previewCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFxRate = null, sellFxRate = null) {
+  const real = getTickerState(ticker);
+  const clone = JSON.parse(JSON.stringify(real));
+  const results = runCyclesOnState(clone, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFxRate, sellFxRate);
+  return { clone, results, cyclesRequested: cycles, cyclesCompleted: results.length };
+}
+
+/* Aplica de vez uma prévia já calculada: substitui o ticker real pelo
+   clone simulado (que já contém todo o histórico anterior + os novos
+   ciclos) e persiste. */
+function commitPreview(ticker, clone) {
+  STATE.portfolio.tickers[ticker] = clone;
+  savePortfolio();
 }
 
 /* ---------------- CSV Import (formato: date,ticker,side,quantity,price,fee,currency) ---------------- */
@@ -639,6 +682,7 @@ function renderTickerSelect() {
 document.getElementById("tickerSelect").addEventListener("change", (e) => {
   STATE.activeTicker = e.target.value;
   localStorage.setItem(ACTIVE_TICKER_KEY, STATE.activeTicker);
+  SIM_PREVIEW = null;
   renderMain();
 });
 
@@ -891,6 +935,7 @@ function renderTabs(container, ticker) {
       class: `tab-btn ${STATE.activeTab === tab.id ? "active" : ""}`,
       onclick: () => {
         STATE.activeTab = tab.id;
+        if (tab.id !== "simulate") SIM_PREVIEW = null;
         renderMain();
       },
     }, tab.label);
@@ -991,18 +1036,35 @@ function renderTradeTab(container, ticker) {
 
 /* ---------------- Aba: Simular ciclos ---------------- */
 
+let SIM_PREVIEW = null; // { ticker, clone, results, cyclesRequested, cyclesCompleted }
+
 function renderSimulateTab(container, ticker) {
-  const card = el("div", { class: "card" }, [
-    el("h4", {}, "Ciclos automáticos (comprar abaixo / vender acima do lote)"),
+  const ts = getTickerState(ticker);
+  const isUSD = ts.currency === "USD";
+  const symbol = isUSD ? "US$" : "¥";
+
+  const fields = [
     el("div", { class: "row3" }, [
       el("div", { class: "field" }, [el("label", {}, "Qtd por compra"), el("input", { id: "cycBuyQty", type: "number", value: "5", min: "1" })]),
-      el("div", { class: "field" }, [el("label", {}, "Preço de compra"), el("input", { id: "cycBuyPrice", type: "number", value: "125", step: "0.01" })]),
+      el("div", { class: "field" }, [el("label", {}, `Preço de compra (${symbol})`), el("input", { id: "cycBuyPrice", type: "number", value: "125", step: "0.01" })]),
       el("div", { class: "field" }, [el("label", {}, "Nº de ciclos"), el("input", { id: "cycCount", type: "number", value: "10", min: "1" })]),
     ]),
     el("div", { class: "row3" }, [
       el("div", { class: "field" }, [el("label", {}, "Qtd por venda"), el("input", { id: "cycSellQty", type: "number", value: "5", min: "1" })]),
-      el("div", { class: "field" }, [el("label", {}, "Preço de venda"), el("input", { id: "cycSellPrice", type: "number", value: "145", step: "0.01" })]),
+      el("div", { class: "field" }, [el("label", {}, `Preço de venda (${symbol})`), el("input", { id: "cycSellPrice", type: "number", value: "145", step: "0.01" })]),
     ]),
+  ];
+  if (isUSD) {
+    fields.push(el("div", { class: "row2" }, [
+      el("div", { class: "field" }, [el("label", {}, "Câmbio na compra"), el("input", { id: "cycBuyFx", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) })]),
+      el("div", { class: "field" }, [el("label", {}, "Câmbio na venda"), el("input", { id: "cycSellFx", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) })]),
+    ]));
+  }
+
+  const card = el("div", { class: "card" }, [
+    el("h4", {}, "Ciclos automáticos (comprar abaixo / vender acima do lote)"),
+    el("p", { class: "help-text" }, "Isso é uma prévia: nada é aplicado até você confirmar."),
+    ...fields,
     el("div", { style: "margin-top:14px;" }, [
       el("button", {
         onclick: () => {
@@ -1015,14 +1077,76 @@ function renderSimulateTab(container, ticker) {
             showToast("Preencha todos os campos.", true);
             return;
           }
-          const results = runCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles);
-          showToast(`${results.length} ciclo(s) aplicado(s).`);
+          const buyFx = isUSD ? parseFloat(document.getElementById("cycBuyFx").value) || STATE.fxConfig.usdJpy : null;
+          const sellFx = isUSD ? parseFloat(document.getElementById("cycSellFx").value) || STATE.fxConfig.usdJpy : null;
+
+          const preview = previewCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFx, sellFx);
+          SIM_PREVIEW = { ticker, ...preview };
           renderMain();
         },
-      }, "RODAR CICLOS"),
+      }, "PRÉ-VISUALIZAR"),
     ]),
+    el("div", { id: "simPreviewSlot" }),
   ]);
   container.appendChild(card);
+
+  if (SIM_PREVIEW && SIM_PREVIEW.ticker === ticker) {
+    renderSimPreviewPanel(card.querySelector("#simPreviewSlot"), ticker);
+  }
+}
+
+function renderSimPreviewPanel(slot, ticker) {
+  const { clone, results, cyclesRequested, cyclesCompleted } = SIM_PREVIEW;
+  const before = getTickerState(ticker);
+  const cur = clone.currency;
+
+  const totalTaxResultJPY = results.reduce((sum, r) => sum + (r.taxResultJPY || 0), 0);
+  const beforeSnap = snapshotFromState(before);
+  const afterSnap = snapshotFromState(clone);
+  const beBefore = breakEvenEconomic(beforeSnap);
+  const beAfter = breakEvenEconomic(afterSnap);
+
+  slot.appendChild(el("div", { style: "margin-top:16px;padding-top:14px;border-top:1px solid var(--border);" }, [
+    el("h4", {}, "Prévia do resultado"),
+    cyclesCompleted < cyclesRequested
+      ? el("p", { class: "help-text", style: "color:var(--danger);" },
+          `Só ${cyclesCompleted} de ${cyclesRequested} ciclo(s) cabem na posição atual (ficaria sem ações suficientes pra continuar).`)
+      : null,
+    el("div", { class: "table-scroll" }, el("table", {}, [
+      el("thead", {}, el("tr", {}, [el("th", {}, "Indicador"), el("th", {}, "Antes"), el("th", {}, "Depois")])),
+      el("tbody", {}, [
+        el("tr", {}, [el("td", {}, "Quantidade"), el("td", {}, String(before.quantity)), el("td", {}, String(clone.quantity))]),
+        el("tr", {}, [el("td", {}, "Custo médio fiscal"), el("td", {}, fmtMoney(before.avgCost, cur, 3)), el("td", {}, fmtMoney(clone.avgCost, cur, 3))]),
+        el("tr", {}, [el("td", {}, "Caixa acumulado"), el("td", {}, fmtMoney(before.cashBalance, cur)), el("td", {}, fmtMoney(clone.cashBalance, cur))]),
+        el("tr", {}, [
+          el("td", {}, "Break-even econômico"),
+          el("td", {}, beBefore === null ? "—" : fmtMoney(beBefore, cur, 3)),
+          el("td", {}, beAfter === null ? "—" : fmtMoney(beAfter, cur, 3)),
+        ]),
+      ]),
+    ])),
+    el("p", { style: "margin-top:10px;" }, [
+      "Resultado fiscal gerado pelos ciclos: ",
+      el("b", { style: totalTaxResultJPY >= 0 ? "color:var(--mint);" : "color:var(--danger);" }, fmtMoney(totalTaxResultJPY, "JPY")),
+    ]),
+    el("div", { style: "margin-top:14px;display:flex;gap:8px;" }, [
+      el("button", {
+        onclick: () => {
+          commitPreview(ticker, clone);
+          showToast(`${cyclesCompleted} ciclo(s) aplicado(s).`);
+          SIM_PREVIEW = null;
+          renderMain();
+        },
+      }, "CONFIRMAR E APLICAR"),
+      el("button", {
+        class: "secondary",
+        onclick: () => {
+          SIM_PREVIEW = null;
+          renderMain();
+        },
+      }, "CANCELAR"),
+    ]),
+  ]));
 }
 
 /* ---------------- Aba: Objetivo de lucro ---------------- */
