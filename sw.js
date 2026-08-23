@@ -1,5 +1,5 @@
-// BUILD_ID: 2608240452 (JST, aammddhhmm)
-const CACHE_VERSION = "stocklab-2608240452";
+// BUILD_ID: 2608240510 (JST, aammddhhmm)
+const CACHE_VERSION = "stocklab-2608240510";
 
 const CORE_ASSETS = [
   "./",

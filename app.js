@@ -39,6 +39,20 @@ function fmtPct(v) {
   return `${(v * 100).toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}%`;
 }
 
+/* <input type="number"> tem um bug sério em Chromium/Blink: digitar vírgula
+   (comum em teclados PT/JP configurados pro idioma do sistema) não é
+   rejeitado — os dígitos são silenciosamente colados sem o separador
+   ("125,50" vira "12550"). Por isso os campos decimais usam type="text"
+   e leem o valor por aqui, aceitando tanto "." quanto "," como decimal. */
+function parseLocaleFloat(str) {
+  if (str === null || str === undefined) return NaN;
+  return parseFloat(String(str).trim().replace(",", "."));
+}
+function parseLocaleInt(str) {
+  if (str === null || str === undefined) return NaN;
+  return parseInt(String(str).trim().replace(",", "."), 10);
+}
+
 function showToast(msg, isError = false) {
   const el = document.getElementById("toast");
   el.textContent = msg;
@@ -702,19 +716,19 @@ document.getElementById("btnNewTicker").addEventListener("click", () => {
     ]),
     el("div", { class: "field" }, [
       el("label", {}, "Quantidade inicial"),
-      el("input", { id: "newTickerQty", type: "number", value: "100", min: "0" }),
+      el("input", { id: "newTickerQty", type: "text", inputmode: "numeric", value: "100" }),
     ]),
     el("div", { class: "field" }, [
       el("label", {}, "Preço médio inicial"),
-      el("input", { id: "newTickerPrice", type: "number", value: "270", step: "0.01", min: "0" }),
+      el("input", { id: "newTickerPrice", type: "text", inputmode: "decimal", value: "270" }),
     ]),
     el("div", { style: "margin-top:16px;" }, [
       el("button", {
         onclick: () => {
           const code = document.getElementById("newTickerCode").value.trim().toUpperCase();
           const currency = document.getElementById("newTickerCurrency").value;
-          const qty = parseInt(document.getElementById("newTickerQty").value, 10) || 0;
-          const price = parseFloat(document.getElementById("newTickerPrice").value) || 0;
+          const qty = parseLocaleInt(document.getElementById("newTickerQty").value) || 0;
+          const price = parseLocaleFloat(document.getElementById("newTickerPrice").value) || 0;
           if (!code) {
             showToast("Informe o código do ticker.", true);
             return;
@@ -788,33 +802,33 @@ document.getElementById("btnSettings").addEventListener("click", () => {
     el("h3", {}, "Configuração fiscal"),
     el("div", { class: "field" }, [
       el("label", {}, "Imposto nacional (%)"),
-      el("input", { id: "cfgNational", type: "number", step: "0.001", value: String(cfg.nationalTax * 100) }),
+      el("input", { id: "cfgNational", type: "text", inputmode: "decimal", value: String(cfg.nationalTax * 100) }),
     ]),
     el("div", { class: "field" }, [
       el("label", {}, "Imposto local (%)"),
-      el("input", { id: "cfgLocal", type: "number", step: "0.001", value: String(cfg.localTax * 100) }),
+      el("input", { id: "cfgLocal", type: "text", inputmode: "decimal", value: String(cfg.localTax * 100) }),
     ]),
     el("div", { class: "field" }, [
       el("label", {}, "Imposto de reconstrução (%)"),
-      el("input", { id: "cfgRecon", type: "number", step: "0.001", value: String(cfg.reconstructionTax * 100) }),
+      el("input", { id: "cfgRecon", type: "text", inputmode: "decimal", value: String(cfg.reconstructionTax * 100) }),
     ]),
     el("p", { class: "help-text" }, `Alíquota efetiva atual: ${fmtPct(effectiveRate(cfg))}`),
     el("div", { class: "section-title" }, "Câmbio"),
     el("div", { class: "field" }, [
       el("label", {}, "Cotação USD/JPY (1 USD = ¥X)"),
-      el("input", { id: "cfgFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
+      el("input", { id: "cfgFxRate", type: "text", inputmode: "decimal", value: String(STATE.fxConfig.usdJpy) }),
     ]),
     el("p", { class: "help-text" }, "Usada como padrão em compras/vendas de tickers em USD, e no resultado fiscal em JPY (obrigatório por lei, independente da moeda do ativo). Ajuste para a cotação do dia da operação, se necessário."),
     el("div", { style: "margin-top:16px;" }, [
       el("button", {
         onclick: () => {
           STATE.taxConfig = {
-            nationalTax: (parseFloat(document.getElementById("cfgNational").value) || 0) / 100,
-            localTax: (parseFloat(document.getElementById("cfgLocal").value) || 0) / 100,
-            reconstructionTax: (parseFloat(document.getElementById("cfgRecon").value) || 0) / 100,
+            nationalTax: (parseLocaleFloat(document.getElementById("cfgNational").value) || 0) / 100,
+            localTax: (parseLocaleFloat(document.getElementById("cfgLocal").value) || 0) / 100,
+            reconstructionTax: (parseLocaleFloat(document.getElementById("cfgRecon").value) || 0) / 100,
           };
           STATE.fxConfig = {
-            usdJpy: parseFloat(document.getElementById("cfgFxRate").value) || DEFAULT_USD_JPY_RATE,
+            usdJpy: parseLocaleFloat(document.getElementById("cfgFxRate").value) || DEFAULT_USD_JPY_RATE,
           };
           saveTaxConfig();
           saveFxConfig();
@@ -890,11 +904,11 @@ function renderDashboard(container, ticker) {
       el("label", {}, `Cotação atual de ${ticker} (${isUSD ? "US$" : "¥"}) — só para este ticker`),
       el("input", {
         id: "tickerMarketPriceRef",
-        type: "number", step: "0.01", min: "0",
+        type: "text", inputmode: "decimal",
         value: refPrice ? String(refPrice) : "",
         placeholder: "ex: " + (snap.taxAvgCost ? snap.taxAvgCost.toFixed(2) : "100"),
         oninput: (e) => {
-          ts.marketPriceRef = parseFloat(e.target.value) || 0;
+          ts.marketPriceRef = parseLocaleFloat(e.target.value) || 0;
           savePortfolio();
         },
         onchange: () => renderMain(),
@@ -967,14 +981,14 @@ function renderTradeTab(container, ticker) {
 
   // Compra
   const buyFields = [
-    el("div", { class: "field" }, [el("label", {}, "Quantidade"), el("input", { id: "buyQty", type: "number", value: "5", min: "1" })]),
-    el("div", { class: "field" }, [el("label", {}, `Preço (${isUSD ? "US$" : "¥"})`), el("input", { id: "buyPrice", type: "number", value: "100", step: "0.01", min: "0" })]),
-    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "buyFee", type: "number", value: "0", step: "0.01", min: "0" })]),
+    el("div", { class: "field" }, [el("label", {}, "Quantidade"), el("input", { id: "buyQty", type: "text", inputmode: "numeric", value: "5" })]),
+    el("div", { class: "field" }, [el("label", {}, `Preço (${isUSD ? "US$" : "¥"})`), el("input", { id: "buyPrice", type: "text", inputmode: "decimal", value: "100" })]),
+    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "buyFee", type: "text", inputmode: "decimal", value: "0" })]),
   ];
   if (isUSD) {
     buyFields.push(el("div", { class: "field" }, [
       el("label", {}, "Câmbio USD/JPY nesta operação"),
-      el("input", { id: "buyFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
+      el("input", { id: "buyFxRate", type: "text", inputmode: "decimal", value: String(STATE.fxConfig.usdJpy) }),
     ]));
   }
   const buyCard = el("div", { class: "card" }, [
@@ -983,10 +997,10 @@ function renderTradeTab(container, ticker) {
     el("div", { style: "margin-top:14px;" }, [
       el("button", {
         onclick: () => {
-          const qty = parseInt(document.getElementById("buyQty").value, 10);
-          const price = parseFloat(document.getElementById("buyPrice").value);
-          const fee = parseFloat(document.getElementById("buyFee").value) || 0;
-          const fxRate = isUSD ? (parseFloat(document.getElementById("buyFxRate").value) || STATE.fxConfig.usdJpy) : null;
+          const qty = parseLocaleInt(document.getElementById("buyQty").value);
+          const price = parseLocaleFloat(document.getElementById("buyPrice").value);
+          const fee = parseLocaleFloat(document.getElementById("buyFee").value) || 0;
+          const fxRate = isUSD ? (parseLocaleFloat(document.getElementById("buyFxRate").value) || STATE.fxConfig.usdJpy) : null;
           if (!qty || qty <= 0 || Number.isNaN(price)) { showToast("Preencha quantidade e preço válidos.", true); return; }
           buyOnTicker(ticker, qty, price, fee, null, fxRate);
           showToast(`Compra registrada: ${qty} @ ${fmtMoney(price, ts.currency)}`);
@@ -998,14 +1012,14 @@ function renderTradeTab(container, ticker) {
 
   // Venda
   const sellFields = [
-    el("div", { class: "field" }, [el("label", {}, `Quantidade (máx ${ts.quantity})`), el("input", { id: "sellQty", type: "number", value: "1", min: "1", max: String(ts.quantity || 1) })]),
-    el("div", { class: "field" }, [el("label", {}, `Preço (${isUSD ? "US$" : "¥"})`), el("input", { id: "sellPrice", type: "number", value: "100", step: "0.01", min: "0" })]),
-    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "sellFee", type: "number", value: "0", step: "0.01", min: "0" })]),
+    el("div", { class: "field" }, [el("label", {}, `Quantidade (máx ${ts.quantity})`), el("input", { id: "sellQty", type: "text", inputmode: "numeric", value: "1" })]),
+    el("div", { class: "field" }, [el("label", {}, `Preço (${isUSD ? "US$" : "¥"})`), el("input", { id: "sellPrice", type: "text", inputmode: "decimal", value: "100" })]),
+    el("div", { class: "field" }, [el("label", {}, "Corretagem/taxas"), el("input", { id: "sellFee", type: "text", inputmode: "decimal", value: "0" })]),
   ];
   if (isUSD) {
     sellFields.push(el("div", { class: "field" }, [
       el("label", {}, "Câmbio USD/JPY nesta operação"),
-      el("input", { id: "sellFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
+      el("input", { id: "sellFxRate", type: "text", inputmode: "decimal", value: String(STATE.fxConfig.usdJpy) }),
     ]));
   }
   const sellCard = el("div", { class: "card" }, [
@@ -1015,10 +1029,10 @@ function renderTradeTab(container, ticker) {
       el("button", {
         disabled: ts.quantity === 0,
         onclick: () => {
-          const qty = parseInt(document.getElementById("sellQty").value, 10);
-          const price = parseFloat(document.getElementById("sellPrice").value);
-          const fee = parseFloat(document.getElementById("sellFee").value) || 0;
-          const fxRate = isUSD ? (parseFloat(document.getElementById("sellFxRate").value) || STATE.fxConfig.usdJpy) : null;
+          const qty = parseLocaleInt(document.getElementById("sellQty").value);
+          const price = parseLocaleFloat(document.getElementById("sellPrice").value);
+          const fee = parseLocaleFloat(document.getElementById("sellFee").value) || 0;
+          const fxRate = isUSD ? (parseLocaleFloat(document.getElementById("sellFxRate").value) || STATE.fxConfig.usdJpy) : null;
           if (!qty || qty <= 0 || Number.isNaN(price)) { showToast("Preencha quantidade e preço válidos.", true); return; }
           if (qty > ts.quantity) { showToast("Quantidade excede a posição atual.", true); return; }
           sellOnTicker(ticker, qty, price, fee, null, fxRate);
@@ -1045,19 +1059,19 @@ function renderSimulateTab(container, ticker) {
 
   const fields = [
     el("div", { class: "row3" }, [
-      el("div", { class: "field" }, [el("label", {}, "Qtd por compra"), el("input", { id: "cycBuyQty", type: "number", value: "5", min: "1" })]),
-      el("div", { class: "field" }, [el("label", {}, `Preço de compra (${symbol})`), el("input", { id: "cycBuyPrice", type: "number", value: "125", step: "0.01" })]),
-      el("div", { class: "field" }, [el("label", {}, "Nº de ciclos"), el("input", { id: "cycCount", type: "number", value: "10", min: "1" })]),
+      el("div", { class: "field" }, [el("label", {}, "Qtd por compra"), el("input", { id: "cycBuyQty", type: "text", inputmode: "numeric", value: "5" })]),
+      el("div", { class: "field" }, [el("label", {}, `Preço de compra (${symbol})`), el("input", { id: "cycBuyPrice", type: "text", inputmode: "decimal", value: "125" })]),
+      el("div", { class: "field" }, [el("label", {}, "Nº de ciclos"), el("input", { id: "cycCount", type: "text", inputmode: "numeric", value: "10" })]),
     ]),
     el("div", { class: "row3" }, [
-      el("div", { class: "field" }, [el("label", {}, "Qtd por venda"), el("input", { id: "cycSellQty", type: "number", value: "5", min: "1" })]),
-      el("div", { class: "field" }, [el("label", {}, `Preço de venda (${symbol})`), el("input", { id: "cycSellPrice", type: "number", value: "145", step: "0.01" })]),
+      el("div", { class: "field" }, [el("label", {}, "Qtd por venda"), el("input", { id: "cycSellQty", type: "text", inputmode: "numeric", value: "5" })]),
+      el("div", { class: "field" }, [el("label", {}, `Preço de venda (${symbol})`), el("input", { id: "cycSellPrice", type: "text", inputmode: "decimal", value: "145" })]),
     ]),
   ];
   if (isUSD) {
     fields.push(el("div", { class: "row2" }, [
-      el("div", { class: "field" }, [el("label", {}, "Câmbio na compra"), el("input", { id: "cycBuyFx", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) })]),
-      el("div", { class: "field" }, [el("label", {}, "Câmbio na venda"), el("input", { id: "cycSellFx", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) })]),
+      el("div", { class: "field" }, [el("label", {}, "Câmbio na compra"), el("input", { id: "cycBuyFx", type: "text", inputmode: "decimal", value: String(STATE.fxConfig.usdJpy) })]),
+      el("div", { class: "field" }, [el("label", {}, "Câmbio na venda"), el("input", { id: "cycSellFx", type: "text", inputmode: "decimal", value: String(STATE.fxConfig.usdJpy) })]),
     ]));
   }
 
@@ -1068,17 +1082,17 @@ function renderSimulateTab(container, ticker) {
     el("div", { style: "margin-top:14px;display:flex;gap:8px;" }, [
       el("button", {
         onclick: () => {
-          const buyQty = parseInt(document.getElementById("cycBuyQty").value, 10);
-          const buyPrice = parseFloat(document.getElementById("cycBuyPrice").value);
-          const sellQty = parseInt(document.getElementById("cycSellQty").value, 10);
-          const sellPrice = parseFloat(document.getElementById("cycSellPrice").value);
-          const cycles = parseInt(document.getElementById("cycCount").value, 10);
+          const buyQty = parseLocaleInt(document.getElementById("cycBuyQty").value);
+          const buyPrice = parseLocaleFloat(document.getElementById("cycBuyPrice").value);
+          const sellQty = parseLocaleInt(document.getElementById("cycSellQty").value);
+          const sellPrice = parseLocaleFloat(document.getElementById("cycSellPrice").value);
+          const cycles = parseLocaleInt(document.getElementById("cycCount").value);
           if (!buyQty || !sellQty || !cycles || Number.isNaN(buyPrice) || Number.isNaN(sellPrice)) {
             showToast("Preencha todos os campos.", true);
             return;
           }
-          const buyFx = isUSD ? parseFloat(document.getElementById("cycBuyFx").value) || STATE.fxConfig.usdJpy : null;
-          const sellFx = isUSD ? parseFloat(document.getElementById("cycSellFx").value) || STATE.fxConfig.usdJpy : null;
+          const buyFx = isUSD ? parseLocaleFloat(document.getElementById("cycBuyFx").value) || STATE.fxConfig.usdJpy : null;
+          const sellFx = isUSD ? parseLocaleFloat(document.getElementById("cycSellFx").value) || STATE.fxConfig.usdJpy : null;
 
           const preview = previewCycles(ticker, buyQty, buyPrice, sellQty, sellPrice, cycles, buyFx, sellFx);
           SIM_PREVIEW = { ticker, ...preview };
@@ -1164,8 +1178,8 @@ function renderTargetTab(container, ticker) {
   const card = el("div", { class: "card" }, [
     el("h4", {}, "Objetivo de lucro"),
     el("div", { class: "row2" }, [
-      el("div", { class: "field" }, [el("label", {}, `Lucro desejado (${cur === "USD" ? "US$" : "¥"})`), el("input", { id: "targetProfit", type: "number", value: "1000", step: "100" })]),
-      el("div", { class: "field" }, [el("label", {}, "ou percentual do capital (%)"), el("input", { id: "targetPct", type: "number", placeholder: "ex: 10" })]),
+      el("div", { class: "field" }, [el("label", {}, `Lucro desejado (${cur === "USD" ? "US$" : "¥"})`), el("input", { id: "targetProfit", type: "text", inputmode: "decimal", value: "1000" })]),
+      el("div", { class: "field" }, [el("label", {}, "ou percentual do capital (%)"), el("input", { id: "targetPct", type: "text", inputmode: "decimal", placeholder: "ex: 10" })]),
     ]),
     el("div", { id: "targetResult", style: "margin-top:14px;font-size:15px;" }),
     el("div", { style: "margin-top:10px;" }, [
@@ -1174,9 +1188,9 @@ function renderTargetTab(container, ticker) {
           const pctRaw = document.getElementById("targetPct").value;
           let desired;
           if (pctRaw) {
-            desired = snap.initialCapital * (parseFloat(pctRaw) / 100);
+            desired = snap.initialCapital * (parseLocaleFloat(pctRaw) / 100);
           } else {
-            desired = parseFloat(document.getElementById("targetProfit").value) || 0;
+            desired = parseLocaleFloat(document.getElementById("targetProfit").value) || 0;
           }
           const resultEl = document.getElementById("targetResult");
           if (snap.quantity === 0) {
@@ -1268,17 +1282,17 @@ function renderScenariosTab(container, ticker) {
   const card = el("div", { class: "card" }, [
     el("h4", {}, "Simular cenários"),
     el("div", { class: "row3" }, [
-      el("div", { class: "field" }, [el("label", {}, "Preço mínimo"), el("input", { id: "scnMin", type: "number", value: String(Math.max(snap.taxAvgCost - 50, 0).toFixed(2)) })]),
-      el("div", { class: "field" }, [el("label", {}, "Preço máximo"), el("input", { id: "scnMax", type: "number", value: String((snap.taxAvgCost + 50).toFixed(2)) })]),
-      el("div", { class: "field" }, [el("label", {}, "Passo"), el("input", { id: "scnStep", type: "number", value: "10" })]),
+      el("div", { class: "field" }, [el("label", {}, "Preço mínimo"), el("input", { id: "scnMin", type: "text", inputmode: "decimal", value: String(Math.max(snap.taxAvgCost - 50, 0).toFixed(2)) })]),
+      el("div", { class: "field" }, [el("label", {}, "Preço máximo"), el("input", { id: "scnMax", type: "text", inputmode: "decimal", value: String((snap.taxAvgCost + 50).toFixed(2)) })]),
+      el("div", { class: "field" }, [el("label", {}, "Passo"), el("input", { id: "scnStep", type: "text", inputmode: "decimal", value: "10" })]),
     ]),
     el("div", { style: "margin-top:14px;" }, [
       el("button", {
         onclick: () => {
           if (snap.quantity === 0) { showToast("Sem ações restantes para simular.", true); return; }
-          const pMin = parseFloat(document.getElementById("scnMin").value);
-          const pMax = parseFloat(document.getElementById("scnMax").value);
-          const step = parseFloat(document.getElementById("scnStep").value) || 1;
+          const pMin = parseLocaleFloat(document.getElementById("scnMin").value);
+          const pMax = parseLocaleFloat(document.getElementById("scnMax").value);
+          const step = parseLocaleFloat(document.getElementById("scnStep").value) || 1;
           const prices = [];
           for (let p = pMin; p <= pMax + 1e-9; p += step) prices.push(Math.round(p * 10000) / 10000);
           const table = scenarioTable(snap, prices);
