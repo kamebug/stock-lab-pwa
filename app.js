@@ -121,7 +121,6 @@ const STATE = {
   fxConfig: loadFxConfig(),
   activeTicker: localStorage.getItem(ACTIVE_TICKER_KEY) || null,
   activeTab: "trade",
-  marketPriceRef: 0,
 };
 
 function newTickerState(ticker, currency = "JPY") {
@@ -133,6 +132,7 @@ function newTickerState(ticker, currency = "JPY") {
     avgCostJPY: 0,       // custo médio em JPY (igual a avgCost se currency === 'JPY')
     cashBalance: 0,      // caixa na moeda nativa do ticker
     initialCapital: 0,   // capital inicial na moeda nativa do ticker
+    marketPriceRef: 0,   // cotação atual de referência, própria deste ticker
     transactions: [],
   };
 }
@@ -149,13 +149,16 @@ function getTickerState(ticker, currency = "JPY") {
    ponderada; venda debita a quantidade ao custo médio vigente
    sem alterar o custo médio por ação. */
 
-function applyBuy(ts, quantity, unitPrice, fxRate = 1) {
+function applyBuy(ts, quantity, unitPrice, fxRate = 1, fees = 0) {
   const qtyBefore = ts.quantity;
   const avgBefore = ts.avgCost;
   const existingTotal = qtyBefore * avgBefore;
   const purchaseTotal = quantity * unitPrice;
+  // Para fins fiscais, a corretagem/taxas da compra é incorporada ao
+  // custo de aquisição (aumenta o custo médio) — dedutível por lei.
+  const purchaseTotalForTax = purchaseTotal + fees;
   const qtyAfter = qtyBefore + quantity;
-  const avgAfter = qtyAfter > 0 ? (existingTotal + purchaseTotal) / qtyAfter : 0;
+  const avgAfter = qtyAfter > 0 ? (existingTotal + purchaseTotalForTax) / qtyAfter : 0;
 
   ts.quantity = qtyAfter;
   ts.avgCost = avgAfter;
@@ -163,9 +166,10 @@ function applyBuy(ts, quantity, unitPrice, fxRate = 1) {
   // Faixa paralela em JPY (mesmo algoritmo de custo médio, preços convertidos).
   // Para tickers em JPY, fxRate=1 e avgCostJPY === avgCost sempre.
   const unitPriceJPY = unitPrice * fxRate;
+  const feesJPY = fees * fxRate;
   const avgBeforeJPY = ts.avgCostJPY;
   const existingTotalJPY = qtyBefore * avgBeforeJPY;
-  const purchaseTotalJPY = quantity * unitPriceJPY;
+  const purchaseTotalJPY = quantity * unitPriceJPY + feesJPY;
   const avgAfterJPY = qtyAfter > 0 ? (existingTotalJPY + purchaseTotalJPY) / qtyAfter : 0;
   ts.avgCostJPY = avgAfterJPY;
 
@@ -175,15 +179,18 @@ function applyBuy(ts, quantity, unitPrice, fxRate = 1) {
   };
 }
 
-function applySell(ts, quantity, unitPrice, fxRate = 1) {
+function applySell(ts, quantity, unitPrice, fxRate = 1, fees = 0) {
   if (quantity > ts.quantity) {
     throw new Error(`Venda de ${quantity} ações excede a posição atual de ${ts.quantity}`);
   }
   const qtyBefore = ts.quantity;
   const avgBefore = ts.avgCost;
   const grossProceeds = quantity * unitPrice;
+  // Para fins fiscais, a corretagem/taxas da venda reduz a receita
+  // líquida tributável — dedutível por lei.
+  const netProceedsForTax = grossProceeds - fees;
   const taxCostBasis = quantity * avgBefore;
-  const taxResult = grossProceeds - taxCostBasis;
+  const taxResult = netProceedsForTax - taxCostBasis;
   const qtyAfter = qtyBefore - quantity;
 
   ts.quantity = qtyAfter;
@@ -193,9 +200,11 @@ function applySell(ts, quantity, unitPrice, fxRate = 1) {
   // moeda do ativo). Para tickers em JPY, isso é idêntico ao taxResult nativo.
   const avgBeforeJPY = ts.avgCostJPY;
   const unitPriceJPY = unitPrice * fxRate;
+  const feesJPY = fees * fxRate;
   const grossProceedsJPY = quantity * unitPriceJPY;
+  const netProceedsJPYForTax = grossProceedsJPY - feesJPY;
   const taxCostBasisJPY = quantity * avgBeforeJPY;
-  const taxResultJPY = grossProceedsJPY - taxCostBasisJPY;
+  const taxResultJPY = netProceedsJPYForTax - taxCostBasisJPY;
   // avgCostJPY não muda numa venda, igual ao nativo
 
   return {
@@ -214,7 +223,7 @@ function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate 
   const ts = getTickerState(ticker);
   const effFxRate = ts.currency === "USD" ? (fxRate || STATE.fxConfig.usdJpy) : 1;
   const isFirstBuy = ts.quantity === 0 && ts.transactions.length === 0;
-  const r = applyBuy(ts, quantity, unitPrice, effFxRate);
+  const r = applyBuy(ts, quantity, unitPrice, effFxRate, fees);
   const cashFlow = -(r.grossCost + fees);
   ts.cashBalance += cashFlow;
   if (isFirstBuy) ts.initialCapital = r.grossCost;
@@ -250,7 +259,7 @@ function buyOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate 
 function sellOnTicker(ticker, quantity, unitPrice, fees = 0, date = null, fxRate = null) {
   const ts = getTickerState(ticker);
   const effFxRate = ts.currency === "USD" ? (fxRate || STATE.fxConfig.usdJpy) : 1;
-  const r = applySell(ts, quantity, unitPrice, effFxRate);
+  const r = applySell(ts, quantity, unitPrice, effFxRate, fees);
   const cashFlow = r.grossProceeds - fees;
   ts.cashBalance += cashFlow;
 
@@ -752,10 +761,6 @@ document.getElementById("btnSettings").addEventListener("click", () => {
       el("input", { id: "cfgFxRate", type: "number", step: "0.01", value: String(STATE.fxConfig.usdJpy) }),
     ]),
     el("p", { class: "help-text" }, "Usada como padrão em compras/vendas de tickers em USD, e no resultado fiscal em JPY (obrigatório por lei, independente da moeda do ativo). Ajuste para a cotação do dia da operação, se necessário."),
-    el("div", { class: "field" }, [
-      el("label", {}, "Preço de mercado de referência (opcional)"),
-      el("input", { id: "cfgMarketPrice", type: "number", step: "0.01", value: String(STATE.marketPriceRef || "") }),
-    ]),
     el("div", { style: "margin-top:16px;" }, [
       el("button", {
         onclick: () => {
@@ -767,7 +772,6 @@ document.getElementById("btnSettings").addEventListener("click", () => {
           STATE.fxConfig = {
             usdJpy: parseFloat(document.getElementById("cfgFxRate").value) || DEFAULT_USD_JPY_RATE,
           };
-          STATE.marketPriceRef = parseFloat(document.getElementById("cfgMarketPrice").value) || 0;
           saveTaxConfig();
           saveFxConfig();
           closeModal();
@@ -790,6 +794,24 @@ function renderDashboard(container, ticker) {
   const cur = snap.currency;
   const isUSD = cur === "USD";
   const fx = STATE.fxConfig.usdJpy;
+  const refPrice = ts.marketPriceRef || 0;
+
+  const econResultBlock = [];
+  if (refPrice > 0) {
+    const result = economicResult(snap, refPrice);
+    const resultClass = result >= 0 ? "mint" : "danger";
+    if (isUSD) {
+      econResultBlock.push(metricEl(
+        "Result. econ. @ cotação",
+        `${fmtMoney(result, "USD")} (${fmtMoney(result * fx, "JPY", 0)})`,
+        resultClass,
+      ));
+    } else {
+      econResultBlock.push(metricEl("Result. econ. @ cotação", fmtMoney(result, "JPY"), resultClass));
+    }
+  } else {
+    econResultBlock.push(metricEl("Result. econ. @ cotação", "—"));
+  }
 
   const card = el("div", { class: "card" }, [
     el("h2", {}, `📊 ${ticker} ${isUSD ? "🇺🇸" : "🇯🇵"}`),
@@ -801,7 +823,7 @@ function renderDashboard(container, ticker) {
     isUSD
       ? el("p", { class: "help-text" },
           `≈ ${fmtMoney(snap.cashBalance * fx, "JPY", 0)} de caixa e ` +
-          `${fmtMoney(snap.initialCapital * fx, "JPY", 0)} de capital, convertido à cotação atual (¥${fx.toFixed(2)}/US$).`)
+          `${fmtMoney(snap.initialCapital * fx, "JPY", 0)} de capital, convertido à cotação de câmbio atual (¥${fx.toFixed(2)}/US$).`)
       : null,
     el("div", { class: "section-title" }, "Visão fiscal (sempre em ¥, por lei japonesa)"),
     el("div", { class: "metric-grid" }, [
@@ -818,9 +840,21 @@ function renderDashboard(container, ticker) {
     el("div", { class: "metric-grid" }, [
       metricEl("Break-even fiscal", fmtMoney(breakEvenFiscal(snap), cur, 3)),
       metricEl("Break-even econômico", be === null ? "—" : fmtMoney(be, cur, 3), "cyan"),
-      STATE.marketPriceRef
-        ? metricEl("Result. econ. @ ref.", fmtMoney(economicResult(snap, STATE.marketPriceRef), cur), economicResult(snap, STATE.marketPriceRef) >= 0 ? "mint" : "danger")
-        : metricEl("Result. econ. @ ref.", "—"),
+      ...econResultBlock,
+    ]),
+    el("div", { class: "field", style: "margin-top:10px;max-width:260px;" }, [
+      el("label", {}, `Cotação atual de ${ticker} (${isUSD ? "US$" : "¥"}) — só para este ticker`),
+      el("input", {
+        id: "tickerMarketPriceRef",
+        type: "number", step: "0.01", min: "0",
+        value: refPrice ? String(refPrice) : "",
+        placeholder: "ex: " + (snap.taxAvgCost ? snap.taxAvgCost.toFixed(2) : "100"),
+        oninput: (e) => {
+          ts.marketPriceRef = parseFloat(e.target.value) || 0;
+          savePortfolio();
+        },
+        onchange: () => renderMain(),
+      }),
     ]),
     el("p", { class: "disclaimer" },
       "⚠️ Custo médio fiscal menor ≠ lucro econômico. Lucro de caixa numa operação ≠ lucro fiscal tributável. " +
