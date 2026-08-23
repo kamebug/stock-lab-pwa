@@ -734,16 +734,16 @@ document.getElementById("btnSettings").addEventListener("click", () => {
   const wrap = el("div", {}, [
     el("h3", {}, "Configuração fiscal"),
     el("div", { class: "field" }, [
-      el("label", {}, "Imposto nacional"),
-      el("input", { id: "cfgNational", type: "number", step: "0.00001", value: String(cfg.nationalTax) }),
+      el("label", {}, "Imposto nacional (%)"),
+      el("input", { id: "cfgNational", type: "number", step: "0.001", value: String(cfg.nationalTax * 100) }),
     ]),
     el("div", { class: "field" }, [
-      el("label", {}, "Imposto local"),
-      el("input", { id: "cfgLocal", type: "number", step: "0.00001", value: String(cfg.localTax) }),
+      el("label", {}, "Imposto local (%)"),
+      el("input", { id: "cfgLocal", type: "number", step: "0.001", value: String(cfg.localTax * 100) }),
     ]),
     el("div", { class: "field" }, [
-      el("label", {}, "Imposto de reconstrução"),
-      el("input", { id: "cfgRecon", type: "number", step: "0.00001", value: String(cfg.reconstructionTax) }),
+      el("label", {}, "Imposto de reconstrução (%)"),
+      el("input", { id: "cfgRecon", type: "number", step: "0.001", value: String(cfg.reconstructionTax * 100) }),
     ]),
     el("p", { class: "help-text" }, `Alíquota efetiva atual: ${fmtPct(effectiveRate(cfg))}`),
     el("div", { class: "section-title" }, "Câmbio"),
@@ -760,9 +760,9 @@ document.getElementById("btnSettings").addEventListener("click", () => {
       el("button", {
         onclick: () => {
           STATE.taxConfig = {
-            nationalTax: parseFloat(document.getElementById("cfgNational").value) || 0,
-            localTax: parseFloat(document.getElementById("cfgLocal").value) || 0,
-            reconstructionTax: parseFloat(document.getElementById("cfgRecon").value) || 0,
+            nationalTax: (parseFloat(document.getElementById("cfgNational").value) || 0) / 100,
+            localTax: (parseFloat(document.getElementById("cfgLocal").value) || 0) / 100,
+            reconstructionTax: (parseFloat(document.getElementById("cfgRecon").value) || 0) / 100,
           };
           STATE.fxConfig = {
             usdJpy: parseFloat(document.getElementById("cfgFxRate").value) || DEFAULT_USD_JPY_RATE,
