@@ -1065,7 +1065,7 @@ function renderSimulateTab(container, ticker) {
     el("h4", {}, "Ciclos automáticos (comprar abaixo / vender acima do lote)"),
     el("p", { class: "help-text" }, "Isso é uma prévia: nada é aplicado até você confirmar."),
     ...fields,
-    el("div", { style: "margin-top:14px;" }, [
+    el("div", { style: "margin-top:14px;display:flex;gap:8px;" }, [
       el("button", {
         onclick: () => {
           const buyQty = parseInt(document.getElementById("cycBuyQty").value, 10);
@@ -1085,6 +1085,13 @@ function renderSimulateTab(container, ticker) {
           renderMain();
         },
       }, "PRÉ-VISUALIZAR"),
+      el("button", {
+        class: "secondary",
+        onclick: () => {
+          SIM_PREVIEW = null;
+          renderMain();
+        },
+      }, "LIMPAR"),
     ]),
     el("div", { id: "simPreviewSlot" }),
   ]);
