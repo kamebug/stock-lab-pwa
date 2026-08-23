@@ -449,9 +449,19 @@ function commitPreview(ticker, clone) {
    Roda tudo numa cópia isolada primeiro: se uma venda posterior deixar
    de caber (ex: reduziu a quantidade inicial abaixo do que já foi
    vendido depois), nada é alterado e um erro é devolvido. */
-function editInitialPosition(ticker, newQuantity, newPrice) {
+/* Edita a operação no índice `index` do histórico (qualquer uma, não só a
+   primeira) e reconstrói TODO o histórico a partir do zero, reaplicando
+   as operações na mesma ordem com o valor corrigido — reaproveita a
+   mesma lógica de compra/venda já testada, então custo médio, caixa e
+   fiscal ficam corretos para a posição inteira. Roda tudo numa cópia
+   isolada primeiro: se a edição deixar uma operação seguinte inválida
+   (ex: reduzir uma compra abaixo do que já foi vendido depois dela),
+   nada é alterado e um erro é devolvido. */
+function editTransactionAt(ticker, index, updates) {
   const ts = getTickerState(ticker);
-  if (ts.transactions.length === 0) return { ok: false, error: "Sem operações para editar." };
+  if (index < 0 || index >= ts.transactions.length) {
+    return { ok: false, error: "Operação não encontrada." };
+  }
 
   const original = ts.transactions.map((t) => ({
     side: t.side,
@@ -461,8 +471,7 @@ function editInitialPosition(ticker, newQuantity, newPrice) {
     date: t.date,
     fxRate: t.fxRate,
   }));
-  original[0].quantity = newQuantity;
-  original[0].unitPrice = newPrice;
+  original[index] = { ...original[index], ...updates };
 
   const clone = {
     ticker: ts.ticker,
@@ -491,6 +500,10 @@ function editInitialPosition(ticker, newQuantity, newPrice) {
   STATE.portfolio.tickers[ticker] = clone;
   savePortfolio();
   return { ok: true };
+}
+
+function editInitialPosition(ticker, newQuantity, newPrice) {
+  return editTransactionAt(ticker, 0, { quantity: newQuantity, unitPrice: newPrice });
 }
 
 /* ---------------- CSV Import (formato: date,ticker,side,quantity,price,fee,currency) ---------------- */
@@ -1461,9 +1474,11 @@ function renderHistoryTab(container, ticker) {
   ];
   if (isUSD) headerCells.push(el("th", {}, "Câmbio"));
   headerCells.push(el("th", {}, "Res. fiscal (¥)"));
+  headerCells.push(el("th", {}, ""));
 
   const card = el("div", { class: "card" }, [
     el("h4", {}, "Histórico de operações"),
+    el("p", { class: "help-text" }, "Toque em ✏️ pra corrigir uma operação — recalcula tudo a partir dela."),
     el("div", { class: "table-scroll" }, el("table", {}, [
       el("thead", {}, el("tr", {}, headerCells)),
       el("tbody", {}, [...ts.transactions].reverse().map((t) => {
@@ -1479,11 +1494,90 @@ function renderHistoryTab(container, ticker) {
         ];
         if (isUSD) rowCells.push(el("td", {}, `¥${t.fxRate.toFixed(2)}`));
         rowCells.push(el("td", {}, t.taxResultJPY === null ? "—" : fmtYen(t.taxResultJPY)));
+        rowCells.push(el("td", {}, el("button", {
+          class: "icon-btn",
+          style: "padding:4px 8px;font-size:13px;",
+          title: "Editar esta operação",
+          onclick: () => openEditTransactionModal(ticker, t.id),
+        }, "✏️")));
         return el("tr", {}, rowCells);
       })),
     ])),
   ]);
   container.appendChild(card);
+}
+
+function openEditTransactionModal(ticker, txnId) {
+  const ts = getTickerState(ticker);
+  const index = ts.transactions.findIndex((t) => t.id === txnId);
+  if (index === -1) return;
+  const txn = ts.transactions[index];
+  const isUSD = ts.currency === "USD";
+  const symbol = isUSD ? "US$" : "¥";
+
+  const fields = [
+    el("div", { class: "field" }, [
+      el("label", {}, "Quantidade"),
+      el("input", { id: "editTxnQty", type: "text", inputmode: "numeric", value: String(txn.quantity) }),
+    ]),
+    el("div", { class: "field" }, [
+      el("label", {}, `Preço (${symbol})`),
+      el("input", { id: "editTxnPrice", type: "text", inputmode: "decimal", value: String(txn.unitPrice) }),
+    ]),
+    el("div", { class: "field" }, [
+      el("label", {}, "Corretagem/taxas"),
+      el("input", { id: "editTxnFee", type: "text", inputmode: "decimal", value: String(txn.fees) }),
+    ]),
+  ];
+  if (isUSD) {
+    fields.push(el("div", { class: "field" }, [
+      el("label", {}, "Câmbio USD/JPY"),
+      el("input", { id: "editTxnFx", type: "text", inputmode: "decimal", value: String(txn.fxRate) }),
+    ]));
+  }
+
+  const wrap = el("div", {}, [
+    el("h3", {}, `Editar operação Nº${txn.id}`),
+    el("p", { class: "help-text" },
+      `${txn.side === "BUY" ? "Compra" : "Venda"} de ${txn.date}. ` +
+      "Corrige esta operação e recalcula todo o histórico a partir dela (custo médio, caixa, fiscal)."),
+    ...fields,
+    el("div", { id: "editTxnError" }),
+    el("div", { style: "margin-top:16px;" }, [
+      el("button", {
+        onclick: () => {
+          const quantity = parseLocaleInt(document.getElementById("editTxnQty").value);
+          const unitPrice = parseLocaleFloat(document.getElementById("editTxnPrice").value);
+          const fees = parseLocaleFloat(document.getElementById("editTxnFee").value) || 0;
+          if (!quantity || quantity <= 0 || Number.isNaN(unitPrice) || unitPrice < 0) {
+            showToast("Preencha quantidade e preço válidos.", true);
+            return;
+          }
+          const updates = { quantity, unitPrice, fees };
+          if (isUSD) {
+            const fxRate = parseLocaleFloat(document.getElementById("editTxnFx").value);
+            if (!fxRate || fxRate <= 0) {
+              showToast("Câmbio inválido.", true);
+              return;
+            }
+            updates.fxRate = fxRate;
+          }
+          const result = editTransactionAt(ticker, index, updates);
+          if (!result.ok) {
+            document.getElementById("editTxnError").appendChild(
+              el("p", { class: "help-text", style: "color:var(--danger);" },
+                `Não foi possível aplicar: ${result.error} — alguma operação posterior deixaria de caber com esses valores.`)
+            );
+            return;
+          }
+          closeModal();
+          renderMain();
+          showToast("Operação atualizada.");
+        },
+      }, "SALVAR"),
+    ]),
+  ]);
+  openModal(wrap);
 }
 
 /* ---------------- Aba: Importar CSV ---------------- */
